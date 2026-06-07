@@ -1,0 +1,16 @@
+# Local runtime state
+download_history.db
+settings.ini
+
+# Downloaded Instagram media
+vincentwetzel/
+
+# Python cache/build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/

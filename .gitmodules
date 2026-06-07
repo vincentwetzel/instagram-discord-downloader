@@ -1,0 +1,3 @@
+[submodule "private-data"]
+	path = private-data
+	url = https://github.com/vincentwetzel/instagram-discord-downloader-private-data.git
