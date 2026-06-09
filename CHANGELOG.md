@@ -7,6 +7,8 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 ### Added
+- Discord bot runtime logging to both standard output and `discord_bot.log`,
+  including uncaught exception logging.
 - Direct Message (DM) notifications sent to the bot owner when the bot goes
   online or offline cleanly.
 - Initial project documentation (`ARCHITECTURE.md`, `AGENTS.md`, `CHANGELOG.md`, `README.md`).
@@ -20,6 +22,8 @@ and this project adheres to Semantic Versioning.
   initial status message.
 
 ### Changed
+- Replaced Discord bot startup and error `print()` calls with structured logger
+  calls.
 - Updated Discord configuration to use `discord_bot_token` and `allowed_user_id`.
 - Improved download reports with archive size and remaining-download counters.
 - Renamed downloaded media files to include the source post owner and UTC timestamp.

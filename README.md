@@ -12,6 +12,7 @@ repeat runs skip posts that were already saved.
   containing only a positive integer.
 - Send owner direct messages when the bot comes online or shuts down cleanly.
 - Show live progress by editing the initial Discord status message.
+- Write Discord bot runtime logs to both the console and `discord_bot.log`.
 - Prevent overlapping sessions with an async download lock and a local
   single-instance socket lock.
 - Authenticate with an Instaloader session file, Instagram credentials, 2FA, or
@@ -92,8 +93,9 @@ In your terminal or command prompt, run:
 python discord_bot.py
 ```
 
-If you see a message saying "Logged in as..." and "Ready to receive commands!",
-you are good to go.
+If you see log messages saying "Logged in as..." and
+"Ready to receive commands!", you are good to go. The same startup and error
+logs are also written to `discord_bot.log` for troubleshooting.
 
 On Windows, you can also use:
 
@@ -126,13 +128,13 @@ python instaloader_downloader.py
 
 Downloaded media is written to a folder named after the configured Instagram
 account. Local runtime state such as `settings.ini`, `download_history.db`,
-media folders, Instaloader session artifacts, and Python caches are intentionally
-ignored by Git.
+`discord_bot.log`, media folders, Instaloader session artifacts, and Python
+caches are intentionally ignored by Git.
 
 ## Project Layout
 
 - `discord_bot.py`: Discord command surface, owner authorization, progress
-  updates, shutdown notices, and concurrency locks.
+  updates, shutdown notices, runtime logging, and concurrency locks.
 - `instaloader_downloader.py`: Compatibility entry point for CLI use and older
   imports.
 - `downloader/`: Focused modules for auth, configuration, downloads, history,

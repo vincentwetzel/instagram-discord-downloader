@@ -3,6 +3,7 @@
 import asyncio
 import configparser
 import ctypes
+import logging
 import os
 import socket
 import sys
@@ -12,6 +13,25 @@ from typing import Any, Awaitable, Callable, Optional, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+# Set up logging to both a file and standard output
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("discord_bot.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("discord_bot")
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.critical("Uncaught exception occurred", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
 
 # Import downloader orchestrator directly per module boundaries
 from downloader.session import run_download_session
@@ -41,7 +61,7 @@ class IGDownloaderBot(commands.Bot):
                 user = await self.fetch_user(int(ALLOWED_USER_ID))
                 await user.send("🔴 **Instagram Downloader Bot is going OFFLINE!**")
             except Exception as e:
-                print(f"Failed to send shutdown DM: {e}")
+                logger.error(f"Failed to send shutdown DM: {e}")
         await super().close()
 
 bot: IGDownloaderBot = IGDownloaderBot(command_prefix="!", intents=intents)
@@ -70,10 +90,10 @@ async def on_ready() -> None:
     if not _is_synced:
         try:
             synced = await bot.tree.sync()
-            print(f"Synced {len(synced)} slash command(s).")
+            logger.info(f"Synced {len(synced)} slash command(s).")
             _is_synced = True
         except Exception as e:
-            print(f"Failed to sync slash commands: {e}")
+            logger.error(f"Failed to sync slash commands: {e}")
 
     if ALLOWED_USER_ID and ALLOWED_USER_ID.isdigit() and not _sent_startup_dm:
         try:
@@ -81,12 +101,12 @@ async def on_ready() -> None:
             await user.send("🟢 **Instagram Downloader Bot is now ONLINE!**")
             _sent_startup_dm = True
         except Exception as e:
-            print(f"Failed to send startup DM: {e}")
+            logger.error(f"Failed to send startup DM: {e}")
 
     if bot.user:
-        print(f"Logged in as {bot.user.name} ({bot.user.id})")
-    print("Ready to receive commands!")
-    print("------")
+        logger.info(f"Logged in as {bot.user.name} ({bot.user.id})")
+    logger.info("Ready to receive commands!")
+    logger.info("------")
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
@@ -167,7 +187,7 @@ async def _handle_download_session(
                 except Exception:
                     pass
         except Exception as e:
-            print(f"Failed to send initial response: {e}")
+            logger.error(f"Failed to send initial response: {e}")
             return
             
         # Setup queue and thread-safe callback for live progress updates
@@ -218,7 +238,7 @@ async def _handle_download_session(
                             last_update_time = now
                             update_needed = False
                         except Exception as edit_err:
-                            print(f"Failed to edit status message: {edit_err}")
+                            logger.error(f"Failed to edit status message: {edit_err}")
             except asyncio.CancelledError:
                 if update_needed and status_msg:
                     try:
@@ -255,7 +275,7 @@ async def _handle_download_session(
                     f"```\n{error_msg}\n```"
                 )
             except Exception as final_e:
-                print(f"Failed to send final error report: {final_e}")
+                logger.error(f"Failed to send final error report: {final_e}")
         finally:
             set_log_callback(None)
             update_task.cancel()
@@ -348,24 +368,25 @@ def _enforce_single_instance() -> socket.socket:
         lock_socket.bind(("127.0.0.1", 47200))
         return lock_socket
     except OSError:
-        print("❌ Another instance of the bot is already running. Please close it first.")
+        logger.error("❌ Another instance of the bot is already running. Please close it first.")
         sys.exit(1)
 
 if __name__ == "__main__":
     _lock = _enforce_single_instance()
     
     if not TOKEN or TOKEN == "YOUR_DISCORD_BOT_TOKEN":
-        print(
+        logger.error(
             "❌ Please add your Discord bot token to settings.ini "
             "under the [Discord] section."
         )
         sys.exit(1)
 
     if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
-        print(
+        logger.error(
             "❌ Please add a valid numeric Discord user ID to settings.ini "
             "under the [Discord] section (allowed_user_id) to secure your bot."
         )
         sys.exit(1)
     else:
-        bot.run(TOKEN)
+        logger.info("Starting Instagram Discord Downloader Bot...")
+        bot.run(TOKEN, log_handler=None)

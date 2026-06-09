@@ -32,6 +32,8 @@ stays responsive.
      initial status message with live progress.
    - Truncates returned reports before sending them to Discord.
    - Sends owner DMs when the bot goes online and when it shuts down cleanly.
+   - Writes runtime logs to both standard output and `discord_bot.log`, with
+     uncaught exceptions routed through the same logger.
 
 2. **Downloader Engine (`instaloader_downloader.py`, `downloader/`)**
    - Built on top of `instaloader`.
@@ -55,6 +57,7 @@ stays responsive.
 
 4. **Runtime State**
    - `download_history.db` stores downloaded post shortcodes.
+   - `discord_bot.log` stores local bot startup, shutdown, and error logs.
    - The configured Instagram account folder stores downloaded media.
    - Instaloader session files may be created locally after successful login.
 
