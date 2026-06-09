@@ -6,8 +6,14 @@ repeat runs skip posts that were already saved.
 
 ## Features
 
-- Trigger downloads from Discord with `!download` or `!download <limit>`.
-- Run the downloader directly from the terminal for manual sessions.
+- Trigger downloads from Discord with `/ig_download`, `!download`, or a numeric
+  direct message to the bot owner account.
+- Limit a session with `/ig_download max_posts:10`, `!download 10`, or a DM
+  containing only a positive integer.
+- Send owner direct messages when the bot comes online or shuts down cleanly.
+- Show live progress by editing the initial Discord status message.
+- Prevent overlapping sessions with an async download lock and a local
+  single-instance socket lock.
 - Authenticate with an Instaloader session file, Instagram credentials, 2FA, or
   Firefox cookies as a fallback.
 - Track downloaded post shortcodes in `download_history.db` with idempotent
@@ -18,56 +24,121 @@ repeat runs skip posts that were already saved.
 
 ## Setup
 
-1. **Install dependencies:**
+### 1. Create a Discord Bot
 
-   ```bash
-   pip install discord.py instaloader
-   ```
+If you've never made a Discord bot before, follow these steps:
 
-2. **Create `settings.ini`:**
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+   and log in with your Discord account.
+2. Click the **New Application** button in the top right, give it a name (like
+   "IG Downloader"), and click **Create**.
+3. On the left menu, click **Bot**.
+4. Under the **Privileged Gateway Intents** section, toggle
+   **Message Content Intent** to ON and save changes. This is required for the
+   bot to read `!download` commands.
+5. Scroll up to the **Token** section and click **Reset Token**. Copy this long
+   string of text. **Keep this secret!** This is your `YOUR_DISCORD_BOT_TOKEN`.
 
-   Add the file in the project root. The Discord section is required for the
-   bot. The Instagram password is optional if you already have a valid
-   Instaloader session file or Firefox cookies.
+### 2. Invite the Bot to Your Server
 
-   ```ini
-   [Discord]
-   token = YOUR_DISCORD_BOT_TOKEN
+1. Still in the Developer Portal, click **OAuth2** > **URL Generator** on the
+   left menu.
+2. Under **Scopes**, check the box for `bot`.
+3. Under **Bot Permissions**, check `Send Messages` and `Read Message History`.
+4. Scroll down, copy the **Generated URL**, and paste it into a new tab in your
+   web browser.
+5. Select your Discord server from the dropdown and authorize the bot to join.
 
-   [Credentials]
-   ig_name = your_instagram_username
-   pw = your_instagram_password
-   ```
+### 3. Get Your Discord User ID
 
-3. **Run the Discord bot:**
+To ensure only you can trigger downloads, you need your unique User ID.
 
-   ```bash
-   python discord_bot.py
-   ```
+1. Open Discord, go to **User Settings** (the gear icon bottom left) >
+   **Advanced**.
+2. Toggle **Developer Mode** to ON.
+3. Close settings, right-click your own profile name in any chat or server
+   sidebar, and click **Copy User ID**. This is your `YOUR_DISCORD_USER_ID`.
 
-4. **Or run the downloader directly:**
+### 4. Install Dependencies
 
-   ```bash
-   python instaloader_downloader.py
-   ```
+Make sure you have Python installed. Open your computer's terminal or command
+prompt in this folder and run:
+
+```bash
+pip install discord.py instaloader
+```
+
+### 5. Configuration (`settings.ini`)
+
+Create a file named `settings.ini` in the same folder as the scripts and paste
+the following inside it, replacing the placeholder text with your actual
+details:
+
+```ini
+[Discord]
+discord_bot_token = YOUR_DISCORD_BOT_TOKEN
+allowed_user_id = YOUR_DISCORD_USER_ID
+
+[Credentials]
+ig_name = your_instagram_username
+ig_pw = your_instagram_password
+```
+
+### 6. Run the Bot
+
+In your terminal or command prompt, run:
+
+```bash
+python discord_bot.py
+```
+
+If you see a message saying "Logged in as..." and "Ready to receive commands!",
+you are good to go.
+
+On Windows, you can also use:
+
+- `start_bot.bat` to launch the bot in the background with `pythonw`.
+- `stop_bot.bat` to stop the background bot process by the local socket lock
+  port or console title.
 
 ## Usage
 
-- Invite the bot to your server.
-- Type `!download` in a channel to download all new saved posts.
-- Type `!download 10` to limit the session to a maximum of 10 posts.
+Now that the bot is running and in your server:
+
+- Go to your Discord server and type `/ig_download` (or `!download`) in any
+  channel the bot can see to download **all** new saved posts.
+- Use `/ig_download max_posts:10` (or `!download 10`) to limit the session to a
+  maximum of 10 posts.
+- Send the bot a direct message containing only a number, such as `10`, to run
+  a limited session from DMs.
+
+The first time you run this, you may be prompted in your terminal for a 2FA code
+if your Instagram account uses two-factor authentication. Check your terminal
+output if the bot seems stuck.
+
+## Command-Line Usage
+
+Run the downloader directly without Discord:
+
+```bash
+python instaloader_downloader.py
+```
 
 Downloaded media is written to a folder named after the configured Instagram
 account. Local runtime state such as `settings.ini`, `download_history.db`,
-media folders, and Python caches are intentionally ignored by Git.
+media folders, Instaloader session artifacts, and Python caches are intentionally
+ignored by Git.
 
 ## Project Layout
 
-- `discord_bot.py`: Discord command surface and concurrency lock.
+- `discord_bot.py`: Discord command surface, owner authorization, progress
+  updates, shutdown notices, and concurrency locks.
 - `instaloader_downloader.py`: Compatibility entry point for CLI use and older
   imports.
 - `downloader/`: Focused modules for auth, configuration, downloads, history,
   reporting, timing, logging, and Instaloader version checks.
+- `start_bot.bat` / `stop_bot.bat`: Windows helpers for background bot
+  management.
 - `ARCHITECTURE.md`: Component and data-flow overview.
 - `CODING_STANDARDS.md`: Style, concurrency, database, and security rules.
 - `CHANGELOG.md`: Notable project changes.

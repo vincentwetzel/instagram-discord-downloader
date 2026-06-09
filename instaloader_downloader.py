@@ -29,5 +29,11 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    max_posts: Optional[int] = prompt_for_max_posts()
-    run_download_session(max_posts)
+    try:
+        max_posts: Optional[int] = prompt_for_max_posts()
+        report = run_download_session(max_posts)
+        print(f"\n{report}")
+    except KeyboardInterrupt:
+        print("\n\nSession interrupted by user. Exiting.")
+    except Exception as exc:
+        print(f"\n❌ Error running download session: {exc}")

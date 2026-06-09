@@ -1,39 +1,43 @@
 """Instaloader authentication helpers."""
 
-from glob import glob
-from os.path import expanduser
+from contextlib import closing
+from pathlib import Path
 from platform import system
 from sqlite3 import OperationalError, connect
-from typing import Optional
+from typing import Optional, Union
 
 import instaloader
 
 from downloader.logging_utils import log
 
+DEFAULT_COOKIEFILE_PATTERNS: dict[str, str] = {
+    "Windows": "AppData/Roaming/Mozilla/Firefox/Profiles/*/cookies.sqlite",
+    "Darwin": "Library/Application Support/Firefox/Profiles/*/cookies.sqlite",
+}
 
-def get_cookiefile() -> Optional[str]:
+
+def get_cookiefile() -> Optional[Path]:
     """Locate Firefox cookies.sqlite file for cookie extraction.
 
     Returns:
         Path to cookies.sqlite file, or None if not found.
     """
 
-    default_cookiefile: dict[str, str] = {
-        "Windows": "~/AppData/Roaming/Mozilla/Firefox/Profiles/*/cookies.sqlite",
-        "Darwin": "~/Library/Application Support/Firefox/Profiles/*/cookies.sqlite",
-    }
-    cookiefile_pattern = default_cookiefile.get(
+    cookiefile_pattern = DEFAULT_COOKIEFILE_PATTERNS.get(
         system(),
-        "~/.mozilla/firefox/*/cookies.sqlite",
+        ".mozilla/firefox/*/cookies.sqlite",
     )
-    cookiefiles = glob(expanduser(cookiefile_pattern))
+    cookiefiles = list(Path.home().glob(cookiefile_pattern))
     if not cookiefiles:
         return None
+
+    # Sort by modification time to ensure we extract from the most recently active Firefox profile
+    cookiefiles.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return cookiefiles[0]
 
 
 def import_session(
-    cookiefile: str,
+    cookiefile: Union[str, Path],
     instaloader_instance: instaloader.Instaloader,
 ) -> instaloader.Instaloader:
     """Import Instagram session from Firefox cookies.
@@ -46,29 +50,27 @@ def import_session(
         Authenticated Instaloader instance with username set.
 
     Raises:
-        SystemExit: If not logged in to Instagram in Firefox.
+        RuntimeError: If not logged in to Instagram in Firefox.
     """
 
     log(f"Using cookies from {cookiefile}.")
-    conn = connect(f"file:{cookiefile}?immutable=1", uri=True)
-    try:
+    cookie_uri = f"{Path(cookiefile).as_uri()}?immutable=1"
+    with closing(connect(cookie_uri, uri=True)) as conn:
         try:
             cookie_data = conn.execute(
                 "SELECT name, value FROM moz_cookies "
                 "WHERE baseDomain='instagram.com'"
-            )
+            ).fetchall()
         except OperationalError:
             cookie_data = conn.execute(
                 "SELECT name, value FROM moz_cookies "
                 "WHERE host LIKE '%instagram.com'"
-            )
-        instaloader_instance.context._session.cookies.update(cookie_data)
-    finally:
-        conn.close()
+            ).fetchall()
+        instaloader_instance.context._session.cookies.update(dict(cookie_data))
 
     username = instaloader_instance.test_login()
     if not username:
-        raise SystemExit(
+        raise RuntimeError(
             "Not logged in. Are you logged in successfully in Firefox?"
         )
     log(f"Imported session cookie for {username}.")

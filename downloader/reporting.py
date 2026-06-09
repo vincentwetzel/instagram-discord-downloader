@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+from typing import Optional, Union
 
 from downloader.logging_utils import log
 
@@ -10,20 +12,24 @@ from downloader.logging_utils import log
 class DownloadStats:
     """Mutable counters collected during a download session."""
 
-    total_posts_available: int | None = None
+    total_posts_available: Optional[int] = None
     skip_count: int = 0
     download_count: int = 0
     download_errors: int = 0
     pruned_count: int = 0
     error_details: list[str] = field(default_factory=list)
+    history_db_size_before: int = 0
+    history_db_size_after: int = 0
+    remaining_before: Optional[int] = None
+    remaining_after: Optional[int] = None
 
 
 def build_report(
     account_name: str,
     start_time: datetime,
     end_time: datetime,
-    max_posts: int | None,
-    tracking_file: str,
+    max_posts: Optional[int],
+    tracking_file: Union[str, Path],
     stats: DownloadStats,
 ) -> str:
     """Build and log the final download session report.
@@ -60,8 +66,12 @@ def build_report(
         f"  Session ended:        {end_time.strftime('%Y-%m-%d %H:%M:%S')}"
     )
     log_report(f"  Total duration:       {minutes}m {seconds}s")
-    log_report(f"  Posts found:          {_posts_found_text(stats)}")
-    log_report(f"  Posts skipped:        {stats.skip_count} (already downloaded)")
+    log_report(f"  Total posts saved:    {stats.total_posts_available if stats.total_posts_available is not None else 'unknown'}")
+    log_report(f"  Archive size before:  {stats.history_db_size_before} posts")
+    log_report(f"  Archive size now:     {stats.history_db_size_after} posts")
+    log_report(f"  Remaining before:     {stats.remaining_before if stats.remaining_before is not None else 'unknown'} posts")
+    log_report(f"  Remaining to download:{stats.remaining_after if stats.remaining_after is not None else 'unknown'} posts")
+    log_report(f"  Posts skipped:        {stats.skip_count} this session")
     log_report(f"  Posts downloaded:     {stats.download_count}")
     log_report(f"  Stale entries pruned: {stats.pruned_count}")
     log_report(f"  Errors encountered:   {stats.download_errors}")
@@ -75,18 +85,3 @@ def build_report(
     log_report("Session saved successfully.")
     log_report("Done!")
     return "\n".join(report_lines)
-
-
-def _posts_found_text(stats: DownloadStats) -> str:
-    """Return the user-facing posts-found value.
-
-    Args:
-        stats: Download counters.
-
-    Returns:
-        Total posts found, or unknown when retrieval failed.
-    """
-
-    if stats.total_posts_available is None:
-        return "unknown"
-    return str(stats.total_posts_available)

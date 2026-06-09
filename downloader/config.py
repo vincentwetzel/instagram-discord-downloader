@@ -2,7 +2,8 @@
 
 from configparser import ConfigParser
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
 
 @dataclass(frozen=True)
@@ -18,7 +19,7 @@ class DownloaderConfig:
     password: Optional[str]
 
 
-def load_downloader_config(path: str = "settings.ini") -> DownloaderConfig:
+def load_downloader_config(path: Union[str, Path] = "settings.ini") -> DownloaderConfig:
     """Load downloader configuration from an INI file.
 
     Args:
@@ -29,8 +30,17 @@ def load_downloader_config(path: str = "settings.ini") -> DownloaderConfig:
     """
 
     config = ConfigParser()
-    config.read(path)
+    config.read(Path(path))
+
+    ig_name = config.get("Credentials", "ig_name", fallback="")
+    if not ig_name or ig_name == "your_instagram_username":
+        raise ValueError(f"Please configure a valid 'ig_name' in {path}.")
+
+    password = config.get("Credentials", "ig_pw", fallback=None)
+    if password == "your_instagram_password":
+        password = None
+
     return DownloaderConfig(
-        ig_name=config.get("Credentials", "ig_name", fallback="vincentwetzel"),
-        password=config.get("Credentials", "pw", fallback=None),
+        ig_name=ig_name,
+        password=password,
     )

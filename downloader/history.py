@@ -1,30 +1,29 @@
 """SQLite-backed download history tracking."""
 
-from sqlite3 import connect
-from typing import Set
+from contextlib import closing
+from pathlib import Path
+from sqlite3 import OperationalError, connect
+from typing import Union
 
 
-def init_history_db(filepath: str) -> None:
+def init_history_db(filepath: Union[str, Path]) -> None:
     """Initialize SQLite database with the download history table.
 
     Args:
         filepath: Path to the SQLite database file.
     """
 
-    conn = connect(filepath)
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS downloaded_posts ("
-            "shortcode TEXT PRIMARY KEY, "
-            "downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    with closing(connect(filepath)) as conn:
+        with conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS downloaded_posts (
+                    shortcode TEXT PRIMARY KEY,
+                    downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
 
 
-def load_downloaded_shortcodes_db(filepath: str) -> Set[str]:
+def load_downloaded_shortcodes_db(filepath: Union[str, Path]) -> set[str]:
     """Load already-downloaded post shortcodes from SQLite database.
 
     Args:
@@ -34,15 +33,15 @@ def load_downloaded_shortcodes_db(filepath: str) -> Set[str]:
         Set of post shortcodes that have been downloaded.
     """
 
-    conn = connect(filepath)
-    try:
-        cursor = conn.execute("SELECT shortcode FROM downloaded_posts")
-        return {row[0] for row in cursor.fetchall()}
-    finally:
-        conn.close()
+    with closing(connect(filepath)) as conn:
+        try:
+            cursor = conn.execute("SELECT shortcode FROM downloaded_posts")
+            return {row[0] for row in cursor}
+        except OperationalError:
+            return set()
 
 
-def save_downloaded_shortcode_db(filepath: str, shortcode: str) -> None:
+def save_downloaded_shortcode_db(filepath: Union[str, Path], shortcode: str) -> None:
     """Save one downloaded post shortcode to SQLite database.
 
     Uses INSERT OR IGNORE to avoid duplicates and ensure idempotency.
@@ -52,20 +51,17 @@ def save_downloaded_shortcode_db(filepath: str, shortcode: str) -> None:
         shortcode: The post shortcode to save.
     """
 
-    conn = connect(filepath)
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO downloaded_posts (shortcode) VALUES (?)",
-            (shortcode,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    with closing(connect(filepath)) as conn:
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO downloaded_posts (shortcode) VALUES (?)",
+                (shortcode,),
+            )
 
 
 def prune_stale_shortcodes_db(
-    filepath: str,
-    current_shortcodes: Set[str],
+    filepath: Union[str, Path],
+    current_shortcodes: set[str],
 ) -> int:
     """Remove tracked shortcodes no longer in the current saved-post list.
 
@@ -80,17 +76,18 @@ def prune_stale_shortcodes_db(
         Number of stale entries removed.
     """
 
-    conn = connect(filepath)
-    try:
-        cursor = conn.execute("SELECT shortcode FROM downloaded_posts")
-        all_tracked = {row[0] for row in cursor.fetchall()}
+    with closing(connect(filepath)) as conn:
+        try:
+            cursor = conn.execute("SELECT shortcode FROM downloaded_posts")
+            all_tracked = {row[0] for row in cursor}
+        except OperationalError:
+            return 0
+            
         stale = all_tracked - current_shortcodes
         if stale:
-            conn.executemany(
-                "DELETE FROM downloaded_posts WHERE shortcode = ?",
-                [(shortcode,) for shortcode in stale],
-            )
-            conn.commit()
+            with conn:
+                conn.executemany(
+                    "DELETE FROM downloaded_posts WHERE shortcode = ?",
+                    ((shortcode,) for shortcode in stale),
+                )
         return len(stale)
-    finally:
-        conn.close()

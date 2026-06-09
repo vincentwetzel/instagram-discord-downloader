@@ -1,6 +1,7 @@
 # Local runtime state
 download_history.db
 settings.ini
+/.VSCodeCounter
 
 # Downloaded Instagram media
 vincentwetzel/

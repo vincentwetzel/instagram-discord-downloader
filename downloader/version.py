@@ -15,7 +15,7 @@ def check_instaloader_version() -> None:
     """Check whether Instaloader is current and auto-upgrade if outdated.
 
     Raises:
-        SystemExit: If an upgrade is needed but cannot be completed.
+        RuntimeError: If an upgrade occurs or is needed but fails.
     """
 
     try:
@@ -44,6 +44,8 @@ def check_instaloader_version() -> None:
         _upgrade_instaloader(latest_version)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
         log("Could not reach PyPI to verify version. Continuing...")
+    except RuntimeError:
+        raise
     except Exception as exc:
         log(f"Version check failed: {exc}. Continuing...")
 
@@ -55,7 +57,7 @@ def _upgrade_instaloader(latest_version: str) -> None:
         latest_version: Latest version string reported by PyPI.
 
     Raises:
-        SystemExit: Always exits after an attempted upgrade.
+        RuntimeError: Always raised after an attempted upgrade.
     """
 
     try:
@@ -76,21 +78,21 @@ def _upgrade_instaloader(latest_version: str) -> None:
         if result.returncode == 0:
             log(f"Successfully upgraded to Instaloader v{latest_version}")
             log("Please restart the script to use the new version.")
-            raise SystemExit(0)
+            raise RuntimeError("Instaloader upgraded. Please restart the bot.")
 
         log("Auto-upgrade failed!")
         log(f"   pip output: {result.stderr.strip()}")
         log("Please upgrade manually by running:")
         log("   pip install --upgrade instaloader")
-        raise SystemExit(1)
+        raise RuntimeError("Auto-upgrade failed. Please upgrade manually.")
     except subprocess.TimeoutExpired as exc:
         log("Auto-upgrade timed out. Please upgrade manually:")
         log("   pip install --upgrade instaloader")
-        raise SystemExit(1) from exc
-    except SystemExit:
-        raise
+        raise RuntimeError("Auto-upgrade timed out.") from exc
     except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
         log(f"Auto-upgrade failed: {exc}")
         log("Please upgrade manually by running:")
         log("   pip install --upgrade instaloader")
-        raise SystemExit(1) from exc
+        raise RuntimeError(f"Auto-upgrade failed: {exc}") from exc

@@ -1,6 +1,7 @@
 """Download session orchestration."""
 
 import random
+import sys
 from datetime import datetime
 from typing import Optional
 
@@ -23,10 +24,13 @@ def run_download_session(max_posts: Optional[int] = None) -> str:
 
     Returns:
         Text report describing the session outcome.
+
+    Raises:
+        RuntimeError: If authentication fails.
     """
 
     check_instaloader_version()
-    print()
+    log("")
 
     config = load_downloader_config()
     start_time = datetime.now()
@@ -41,9 +45,12 @@ def run_download_session(max_posts: Optional[int] = None) -> str:
         "  Starting downloads in {remaining} seconds...",
     )
 
-    stats = download_saved_posts(loader, config.ig_name, max_posts)
+    try:
+        stats = download_saved_posts(loader, config.ig_name, max_posts)
+    finally:
+        loader.save_session_to_file()
+
     end_time = datetime.now()
-    loader.save_session_to_file()
     return build_report(
         config.ig_name,
         start_time,
@@ -91,7 +98,7 @@ def _create_instaloader() -> instaloader.Instaloader:
         download_comments=False,
         save_metadata=False,
         post_metadata_txt_pattern="",
-        filename_pattern="{profile}_{date}",
+        filename_pattern="{profile}_{date_utc:%Y-%m-%d_%H-%M-%S}",
     )
 
 
@@ -106,7 +113,7 @@ def _authenticate_loader(
         config: Downloader credentials.
 
     Raises:
-        SystemExit: If no authentication method succeeds.
+        RuntimeError: If no authentication method succeeds.
     """
 
     try:
@@ -136,7 +143,7 @@ def _login_and_save_session(
         config: Downloader credentials.
 
     Raises:
-        SystemExit: If login and cookie extraction fail.
+        RuntimeError: If login and cookie extraction fail.
     """
 
     try:
@@ -157,7 +164,7 @@ def _login_and_save_session(
         if cookiefile:
             import_session(cookiefile, loader)
         else:
-            raise SystemExit(
+            raise RuntimeError(
                 "No Firefox cookies found and manual login failed."
             ) from exc
 
@@ -169,7 +176,17 @@ def _complete_two_factor_login(loader: instaloader.Instaloader) -> None:
 
     Args:
         loader: Instaloader instance waiting for two-factor auth.
+
+    Raises:
+        RuntimeError: If two-factor authentication is required but the script
+            is running non-interactively.
     """
+
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "Two-Factor Authentication is required. Please run the downloader script "
+            "interactively in a terminal to authenticate and save the session."
+        )
 
     while True:
         try:
@@ -181,4 +198,3 @@ def _complete_two_factor_login(loader: instaloader.Instaloader) -> None:
             return
         except instaloader.exceptions.BadCredentialsException:
             pass
-
