@@ -55,6 +55,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("discord_bot")
 
+# Enable deep diagnostic logging specifically for the downloader module 
+# without getting flooded by Discord.py and Playwright network spam
+logging.getLogger("downloader").setLevel(logging.DEBUG)
+
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -286,8 +290,25 @@ async def _handle_download_session(
                             status_msg = None
                         except discord.HTTPException as edit_err:
                             if edit_err.code == 50027:
-                                logger.warning("Webhook token expired; stopping live progress updates.")
-                                status_msg = None
+                                if status_msg and interaction and isinstance(interaction.channel, discord.abc.Messageable):
+                                    logger.warning("Webhook token expired; attempting to fetch as regular message to continue updates.")
+                                    try:
+                                        status_msg = await interaction.channel.fetch_message(status_msg.id)
+                                        logs_text = "\n".join(log_lines)
+                                        await status_msg.edit(
+                                            content=(
+                                                f"🚀 Starting Instagram download session {limit_text}...\n"
+                                                f"**Progress Updates:**\n```\n{logs_text}\n```"
+                                            )
+                                        )
+                                        last_update_time = now
+                                        update_needed = False
+                                    except Exception as fetch_err:
+                                        logger.error(f"Failed to convert status message: {fetch_err}")
+                                        status_msg = None
+                                else:
+                                    logger.warning("Webhook token expired; stopping live progress updates.")
+                                    status_msg = None
                             else:
                                 logger.error(f"Failed to edit status message: {edit_err}")
                         except Exception as edit_err:

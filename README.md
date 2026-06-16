@@ -14,11 +14,17 @@ already saved.
   containing only a positive integer.
 - Send owner direct messages when the bot comes online or shuts down cleanly.
 - Show live progress by editing the initial Discord status message.
+- Continue live progress updates through the channel message if Discord's
+  interaction webhook token expires during a long run.
 - Write Discord bot runtime logs to both the console and timestamped files under
   `logs/`, keeping only recent runs.
 - Prevent overlapping sessions with an async download lock and a local
   single-instance socket lock.
-- Authenticate by reusing an active Firefox Instagram session cookie database.
+- Authenticate by reusing active Firefox Instagram cookies, including cookies
+  stored in Firefox Multi-Account Container partitions.
+- Download post and carousel media through layered Playwright retrieval
+  strategies for CDN responses, blob videos, canvas-readable images, in-page
+  fetches, and screenshot fallback for images.
 - Track downloaded post shortcodes in `download_history_<account>.db` with
   idempotent `INSERT OR IGNORE` writes.
 - Prune stale history entries when posts are no longer in saved posts.
@@ -92,8 +98,10 @@ base_download_path = downloads/{account_name}
 
 The downloader uses your active Firefox Instagram session for authentication.
 Log into Instagram in Firefox as the account you want to download before running
-the bot. For multiple configured usernames, switch the active Firefox session to
-the account being processed.
+the bot. If you use multiple Instagram accounts or Firefox Multi-Account
+Containers, make sure each configured username is logged in and selectable in
+Firefox. The downloader tests available Instagram cookie containers and uses
+the one that can access the requested account's saved posts.
 
 The `[Storage]` section is optional. If `base_download_path` is omitted, media is
 saved to `downloads/<account_name>/`. When provided, `{account_name}` or
@@ -130,7 +138,8 @@ Now that the bot is running and in your server:
   a limited session from DMs.
 
 If the bot reports that no Firefox session was found or that the account does
-not match, log into the requested Instagram account in Firefox and run the
+not match, log into the requested Instagram account in Firefox, switch
+Instagram to that account if multiple accounts are signed in, and run the
 command again.
 
 ## Command-Line Usage

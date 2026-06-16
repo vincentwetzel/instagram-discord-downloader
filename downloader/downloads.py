@@ -1,11 +1,16 @@
 """Saved-post download workflow."""
 
+import html
+import json
+import json
+import base64
 import configparser
 import logging
 import os
 import random
 import re
 import sqlite3
+import time # Added import for polling loop
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
@@ -52,25 +57,48 @@ from downloader.reporting import DownloadStats
 from downloader.timing import sleep_with_countdown
 
 
-def _extract_playwright_cookies(cookiefile_path: Path) -> list[dict[str, Any]]:
-    """Extract Firefox cookies for Instagram and format them for Playwright.
+def _extract_playwright_cookie_jars(cookiefile_path: Path) -> list[list[dict[str, Any]]]:
+    """Extract Firefox cookies for Instagram, grouping them by Firefox container partition.
 
     Args:
         cookiefile_path: Path to Firefox's cookies.sqlite file.
 
     Returns:
-        List of cookies dictionaries compatible with Playwright.
+        List of cookie list jars, sorted by most recently accessed.
     """
-    cookies = []
+    import collections
+    jars = collections.defaultdict(list)
+    jar_latest_access = collections.defaultdict(int)
+
     conn = sqlite3.connect(cookiefile_path)
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "SELECT name, value, host, path, isSecure, expiry "
-            "FROM moz_cookies WHERE host LIKE ?",
-            ("%instagram.com%",)
-        )
-        for name, value, host, path, is_secure, expiry in cursor.fetchall():
+        cursor.execute("PRAGMA table_info(moz_cookies)")
+        columns = [col[1] for col in cursor.fetchall()]
+        has_origin_attrs = "originAttributes" in columns
+        has_last_accessed = "lastAccessed" in columns
+
+        query_cols = ["name", "value", "host", "path", "isSecure", "expiry"]
+        if has_origin_attrs:
+            query_cols.append("originAttributes")
+        if has_last_accessed:
+            query_cols.append("lastAccessed")
+
+        query = f"SELECT {', '.join(query_cols)} FROM moz_cookies WHERE host LIKE ?"
+        cursor.execute(query, ("%instagram.com%",))
+        
+        for row in cursor.fetchall():
+            row_dict = dict(zip(query_cols, row))
+            name = row_dict["name"]
+            value = row_dict["value"]
+            host = row_dict["host"]
+            path = row_dict["path"]
+            is_secure = row_dict["isSecure"]
+            expiry = row_dict["expiry"]
+            
+            origin_attr = row_dict.get("originAttributes", "")
+            last_accessed = row_dict.get("lastAccessed", 0)
+            
             cookie = {
                 "name": name,
                 "value": value,
@@ -79,13 +107,16 @@ def _extract_playwright_cookies(cookiefile_path: Path) -> list[dict[str, Any]]:
                 "secure": bool(is_secure),
             }
             if isinstance(expiry, (int, float)) and expiry > 0:
-                # Cap the expiry at Year 2038 (32-bit signed int max) to prevent overflows
                 cookie["expires"] = min(int(expiry), 2147483647)
-            cookies.append(cookie)
+                
+            jars[origin_attr].append(cookie)
+            if last_accessed > jar_latest_access[origin_attr]:
+                jar_latest_access[origin_attr] = last_accessed
     finally:
         conn.close()
-    return cookies
 
+    sorted_keys = sorted(jars.keys(), key=lambda k: jar_latest_access[k], reverse=True)
+    return [jars[k] for k in sorted_keys]
 
 def download_saved_posts(account_name: str, max_posts: Optional[int]) -> DownloadStats:
     """Download saved posts for the configured account.
@@ -108,39 +139,100 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
     if not cookiefile_str:
         raise RuntimeError("No active Firefox session profile found. Please login to Firefox first.")
 
-    cookies = _extract_playwright_cookies(Path(cookiefile_str))
-    if not cookies:
-        raise RuntimeError("No cookies found for instagram.com in Firefox profile.")
+    cookie_jars = _extract_playwright_cookie_jars(Path(cookiefile_str))
+    if not cookie_jars:
+        raise RuntimeError("No Instagram cookies found in the selected Firefox profile.")
 
     log("Launching automated stealth browser...")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800}
-        )
-        context.add_cookies(cookies)
-        page = context.new_page()
-        inject_stealth(page)
+        browser = p.chromium.launch(headless=True, args=["--disable-web-security"])
+        
+        active_context = None
+        active_page = None
+        active_captured_video_urls = None
+        active_captured_responses = None
 
-        # Intercept and store video URLs to resolve blob video sources
-        captured_video_urls: list[str] = []
-        def _capture_video_responses(response):
-            try:
-                url = response.url
-                content_type = response.headers.get("content-type", "")
-                if "video" in content_type or "mime=video" in url:
-                    # Ignore segmented DASH stream chunks, HLS fragments, and byte-range streams
-                    if any(chunk in url for chunk in ["bytestart=", "byteend=", ".m4s", "seg-", "fragment", "chunk"]):
+        for jar_idx, jar_cookies in enumerate(cookie_jars):
+            logger.debug(f"Testing cookie jar {jar_idx + 1}/{len(cookie_jars)}...")
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                bypass_csp=True
+            )
+            context.add_cookies(jar_cookies)
+            page = context.new_page()
+            inject_stealth(page)
+
+            captured_video_urls = []
+            captured_responses = {}
+
+            def _capture_responses(response, urls_ref=captured_video_urls, resps_ref=captured_responses):
+                try:
+                    url = response.url
+                    if not ("instagram.com" in url or "fbcdn.net" in url):
                         return
-                    if url not in captured_video_urls:
-                        captured_video_urls.append(url)
-            except Exception:
-                pass
-        page.on("response", _capture_video_responses)
+
+                    content_type = response.headers.get("content-type", "")
+                    is_video = "video" in content_type or "mime=video" in url or any(url.endswith(ext) for ext in [".mp4", ".mov", ".webm"])
+                    is_image = "image" in content_type
+
+                    if is_video or is_image:
+                        if any(chunk in url for chunk in ["bytestart=", "byteend=", ".m4s", "seg-", "fragment", "chunk"]):
+                            return
+
+                        if is_video and url not in urls_ref:
+                            urls_ref.append(url)
+                            logger.info(f"Added video stream URL to captured_video_urls: {url[:100]}...")
+                        
+                        resps_ref[url] = response
+                except Exception:
+                    pass
+
+            page.on("response", _capture_responses)
+
+            try:
+                page.goto(f"https://www.instagram.com/{account_name}/saved/all-posts/", wait_until="networkidle")
+                
+                if "login" in page.url:
+                    logger.debug(f"Cookie jar {jar_idx + 1} redirected to login.")
+                    context.close()
+                    continue
+
+                if f"/{account_name}/saved/" not in page.url:
+                    logger.debug(f"Cookie jar {jar_idx + 1} mismatch: expected '/{account_name}/saved/', landed on '{page.url}'.")
+                    context.close()
+                    continue
+                
+                # Successfully authenticated with this container!
+                log(f"Successfully authenticated as '{account_name}' using cookie container {jar_idx + 1}!")
+                active_context = context
+                active_page = page
+                active_captured_video_urls = captured_video_urls
+                active_captured_responses = captured_responses
+                break
+            except Exception as test_exc:
+                logger.debug(f"Cookie jar {jar_idx + 1} test raised an exception: {test_exc}")
+                context.close()
+                continue
+
+        if not active_context or not active_page:
+            raise RuntimeError(
+                f"Could not log in as '{account_name}' using your Firefox session.\n\n"
+                f"To fix this, please follow these quick steps:\n"
+                f"1. Open your Firefox browser and go to https://www.instagram.com\n"
+                f"2. Make sure you are logged into the account '{account_name}'.\n"
+                f"3. If you have multiple logged-in accounts, click 'Switch Accounts' on Instagram and select '{account_name}' to make it the active profile.\n"
+                f"4. (Advanced) If you use Firefox Multi-Account Containers, verify you have logged into '{account_name}' inside one of your container tabs.\n"
+                f"5. Once verified, run this command again!"
+            )
+
+        context = active_context
+        page = active_page
+        captured_video_urls = active_captured_video_urls
+        captured_responses = active_captured_responses
 
         log("Accessing saved posts index...")
         try:
@@ -150,8 +242,8 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
             if "login" in page.url:
                 raise RuntimeError("Session expired or invalid. Please refresh Firefox login.")
 
-            # Verify that the active session matches the requested account
-            if f"/{account_name}/" not in page.url:
+            # Verify that the active session matches the requested account and we are on the saved posts page
+            if f"/{account_name}/saved/" not in page.url:
                 raise RuntimeError(
                     f"Account mismatch! The loaded Firefox cookies belong to a different account. "
                     f"Expected to access '/{account_name}/saved/', but landed on '{page.url}'. "
@@ -174,6 +266,7 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
                 stats,
                 db_path,
                 captured_video_urls,
+                captured_responses,
             )
         except Exception as exc:
             stats.download_errors += 1
@@ -200,10 +293,10 @@ def _gather_saved_shortcodes(page: Page) -> list[str]:
     """
     # Wait up to 10 seconds for standard post elements to render in the DOM
     try:
-        page.wait_for_selector("a[href*='/p/'], a[href*='/reel/']", timeout=10000)
+        page.wait_for_selector("a[href*='/p/'], a[href*='/reel/'], a[href*='/reels/']", timeout=10000)
     except Exception as e:
         log("Warning: Timed out waiting for post grid elements to appear on the page.")
-        logger.warning("Timed out waiting for post grid elements to appear", exc_info=True)
+        logger.warning("Timed out waiting for post grid elements to appear")
 
     shortcodes = []
     last_count = 0
@@ -212,7 +305,7 @@ def _gather_saved_shortcodes(page: Page) -> list[str]:
 
     log("Scrolling to retrieve all saved posts index...")
     for attempt in range(max_scroll_attempts):
-        links = page.query_selector_all("a[href*='/p/'], a[href*='/reel/']")
+        links = page.query_selector_all("a[href*='/p/'], a[href*='/reel/'], a[href*='/reels/']")
         for link in links:
             href = link.get_attribute("href")
             if href:
@@ -265,13 +358,62 @@ def prepare_posts(
     log("-" * 60)
 
 
-def _find_next_button(page: Page) -> Optional[Any]:
-    """Locate the Next chevron button in the carousel area using geometry coordinates or attributes.
+def _find_next_button(page: Page, active_elem: Optional[Any] = None) -> Optional[Any]:
+    """Locate the Next chevron button in the carousel area relative to the active media element.
 
-    This is language/locale-agnostic and immune to changes in button label translations.
+    This is completely language-agnostic, layout-agnostic, and immune to class name changes.
     """
+    if active_elem:
+        try:
+            media_box = active_elem.bounding_box()
+            if media_box:
+                media_right = media_box["x"] + media_box["width"]
+                media_center_y = media_box["y"] + (media_box["height"] / 2)
+
+                article_container = page.query_selector("article") or page.query_selector("body")
+                if article_container:
+                    buttons = article_container.query_selector_all("button, [role='button']")
+                    best_btn = None
+                    min_dist = float("inf")
+
+                    for btn in buttons:
+                        if not btn.is_visible():
+                            continue
+                        btn_box = btn.bounding_box()
+                        if not btn_box or btn_box["width"] == 0 or btn_box["height"] == 0:
+                            continue
+
+                        # Skip large layout wrappers, slide overlays, or presentation buttons
+                        if btn_box["width"] > 80 or btn_box["height"] > 80:
+                            continue
+
+                        # Next button must sit strictly on the right half of the active media element
+                        btn_center_x = btn_box["x"] + (btn_box["width"] / 2)
+                        media_center_x = media_box["x"] + (media_box["width"] / 2)
+                        if btn_center_x <= media_center_x:
+                            continue
+
+                        btn_right = btn_box["x"] + btn_box["width"]
+                        btn_center_y = btn_box["y"] + (btn_box["height"] / 2)
+
+                        dist_from_right = abs(btn_right - media_right)
+                        dist_from_center_y = abs(btn_center_y - media_center_y)
+
+                        # Next button sits right inside/outside the right edge of the media, vertically centered
+                        if dist_from_right < 80 and dist_from_center_y < 100:
+                            total_dist = dist_from_right + dist_from_center_y
+                            if total_dist < min_dist:
+                                min_dist = total_dist
+                                best_btn = btn
+
+                    if best_btn:
+                        logger.debug(f"Found carousel Next button via media-relative geometry. Distance: {min_dist}")
+                        return best_btn
+        except Exception as e:
+            logger.debug(f"Error finding next button via media-relative geometry: {e}")
+
+    # Fallback to general selectors if geometry strategy fails or active_elem is None
     try:
-        # Strategy 1: Look for common aria-labels or classes first
         for selector in [
             "button[aria-label*='Next']", 
             "button[aria-label*='next']", 
@@ -282,21 +424,6 @@ def _find_next_button(page: Page) -> Optional[Any]:
             btn = page.query_selector(selector)
             if btn and btn.is_visible():
                 return btn
-    except Exception:
-        pass
-
-    try:
-        # Strategy 2: Look for button elements on the middle-right side of the viewport
-        buttons = page.query_selector_all("button, [role='button']")
-        for btn in buttons:
-            box = btn.bounding_box()
-            if box:
-                # Next button sits in the middle-right area of the page viewport
-                viewport = page.viewport_size
-                width = viewport["width"] if viewport else 1280
-                if box["x"] > (width / 2) and 200 < box["y"] < 600:
-                    if btn.query_selector("svg"):
-                        return btn
     except Exception:
         pass
     return None
@@ -312,28 +439,75 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
     Returns:
         The extracted username.
     """
-    # Locate the main layout container to exclude navigation sidebars completely
-    main_elem = page.query_selector("main, [role='main']") or page
-    candidates = []
-
-    # Strategy 1: Check semantic h2 links inside main (extremely high confidence on Instagram Web)
+    # Priority 1: URL path extraction (extremely reliable on redirected desktop page)
     try:
-        h2_links = main_elem.query_selector_all("h2 a[href]")
-        for link in h2_links:
-            href = link.get_attribute("href")
-            if href:
-                cleaned = href.strip("/")
-                if (
-                    cleaned 
-                    and "/" not in cleaned 
-                    and cleaned not in ["explore", "reels", "direct", "stories", "emails", "locations"]
-                    and re.match(r"^[a-zA-Z0-9._\-]+$", cleaned)
-                ):
-                    candidates.append(cleaned.lower())
+        url_parts = [p for p in page.url.split("/") if p]
+        # Expected format: ['https:', 'www.instagram.com', 'username', 'p' or 'reel' or 'reels', 'shortcode']
+        if len(url_parts) >= 5 and url_parts[3] in ["p", "reel", "reels"]:
+            candidate = url_parts[2].lower()
+            if candidate not in ["p", "reel", "reels", "explore", "stories", "direct", "emails", "locations"]:
+                logger.debug(f"Extracted original post owner '{candidate}' via Priority 1 (URL Path)")
+                return candidate
+    except Exception as e:
+        logger.debug(f"Failed to parse username from URL: {e}")
+
+    json_candidates = []
+    meta_candidates = []
+    dom_confident_candidates = []
+    fallback_candidates = []
+
+    # Priority 2: JSON-LD metadata (highest confidence, 100% author-specific)
+    try:
+        scripts = page.query_selector_all("script[type='application/ld+json']")
+        for script in scripts:
+            text = script.text_content()
+            if text:
+                try:
+                    data = json.loads(text)
+                    items = data if isinstance(data, list) else [data]
+                    for item in items:
+                        author = item.get("author")
+                        if author and isinstance(author, dict):
+                            name = author.get("name") or author.get("alternateName")
+                            if name:
+                                clean_name = name.replace("@", "").strip().lower()
+                                if clean_name:
+                                    json_candidates.append(clean_name)
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # Strategy 2: Check standard headers inside main (Reels fallback)
+    # Priority 3: Meta tags (og:description, description, og:title, twitter:title) - 100% author-specific
+    for selector in ["meta[property='og:description']", "meta[name='description']", "meta[property='og:title']", "meta[name='twitter:title']"]:
+        try:
+            elem = page.query_selector(selector)
+            if elem:
+                content = elem.get_attribute("content")
+                if content:
+                    m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
+                    if m:
+                        meta_candidates.append(m.group(1).lower())
+                    m = re.search(r'@([a-zA-Z0-9._\-]+)', content)
+                    if m:
+                        meta_candidates.append(m.group(1).lower())
+        except Exception:
+            pass
+
+    try:
+        title_val = page.title()
+        if title_val:
+            m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', title_val)
+            if m:
+                meta_candidates.append(m.group(1).lower())
+            m = re.search(r'^([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
+            if m:
+                meta_candidates.append(m.group(1).lower())
+    except Exception:
+        pass
+
+    # Priority 4: Semantic header and h2 elements (poster's username is in h2 or header)
+    main_elem = page.query_selector("main, [role='main']") or page
     try:
         headers = main_elem.query_selector_all("header")
         for h in headers:
@@ -348,11 +522,27 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
                         and cleaned not in ["explore", "reels", "direct", "stories", "emails", "locations"]
                         and re.match(r"^[a-zA-Z0-9._\-]+$", cleaned)
                     ):
-                        candidates.append(cleaned.lower())
+                        dom_confident_candidates.append(cleaned.lower())
     except Exception:
         pass
 
-    # Strategy 3: Check any generic links inside main (scraped in order of appearance)
+    try:
+        h2_links = main_elem.query_selector_all("h2 a[href]")
+        for link in h2_links:
+            href = link.get_attribute("href")
+            if href:
+                cleaned = href.strip("/")
+                if (
+                    cleaned 
+                    and "/" not in cleaned 
+                    and cleaned not in ["explore", "reels", "direct", "stories", "emails", "locations"]
+                    and re.match(r"^[a-zA-Z0-9._\-]+$", cleaned)
+                ):
+                    dom_confident_candidates.append(cleaned.lower())
+    except Exception:
+        pass
+
+    # Priority 5: Generic DOM links (fallback last resort, might contain tagged/commented users)
     try:
         links = main_elem.query_selector_all("a[href]")
         for link in links:
@@ -365,133 +555,141 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
                     and cleaned not in ["explore", "reels", "direct", "stories", "emails", "locations"]
                     and re.match(r"^[a-zA-Z0-9._\-]+$", cleaned)
                 ):
-                    candidates.append(cleaned.lower())
+                    # Tagged user links on Instagram usually appear inside the image overlay.
+                    # Exclude links that reside inside the media container/carousel viewport to prevent tagged user pollution.
+                    try:
+                        is_tag_overlay = page.evaluate(
+                            "(el) => { return !!el.closest('div._aagw, div._aagv, div[role=\"presentation\"]'); }",
+                            link
+                        )
+                        if is_tag_overlay:
+                            continue
+                    except Exception:
+                        pass
+                    fallback_candidates.append(cleaned.lower())
     except Exception:
         pass
 
-    # Strategy 4: Fallback Metadata parsing (kept strictly as candidates)
-    meta_candidates = []
-    for selector in ["meta[property='og:description']", "meta[name='description']"]:
-        try:
-            elem = page.query_selector(selector)
-            if elem:
-                content = elem.get_attribute("content")
-                if content:
-                    m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
-                    if m:
-                        meta_candidates.append(m.group(1).lower())
-        except Exception:
-            pass
+    # Prioritization filtering - find the first candidate that is NOT the logged-in user
+    logged_in_user = fallback_account.lower()
 
-    try:
-        titles_to_check = []
-        title_val = page.title()
-        if title_val:
-            titles_to_check.append(title_val)
-        meta_title_elem = page.query_selector("meta[property='og:title']")
-        if meta_title_elem:
-            content = meta_title_elem.get_attribute("content")
-            if content:
-                titles_to_check.append(content)
-        for text in titles_to_check:
-            m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', text)
-            if m:
-                meta_candidates.append(m.group(1).lower())
-            m = re.search(r'@([a-zA-Z0-9._\-]+)', text)
-            if m:
-                meta_candidates.append(m.group(1).lower())
-            m = re.search(r'^([a-zA-Z0-9._\-]+)\s+on\s+Instagram', text, re.IGNORECASE)
-            if m:
-                meta_candidates.append(m.group(1).lower())
-    except Exception:
-        pass
-
-    # Prioritization Phase
-    # Rule 1: Find first DOM candidate that is NOT the logged-in user
-    for c in candidates:
-        if c != fallback_account.lower():
+    for c in json_candidates:
+        if c != logged_in_user:
+            logger.debug(f"Extracted original post owner '{c}' via Priority 2 (JSON-LD)")
             return c
 
-    # Rule 2: Find first meta candidate that is NOT the logged-in user
     for c in meta_candidates:
-        if c != fallback_account.lower():
+        if c != logged_in_user:
+            logger.debug(f"Extracted original post owner '{c}' via Priority 3 (Meta Tags)")
             return c
 
-    # Rule 3: If only the logged-in user remains as a valid candidate, return it
-    if candidates:
-        return candidates[0]
-    if meta_candidates:
-        return meta_candidates[0]
+    for c in dom_confident_candidates:
+        if c != logged_in_user:
+            logger.debug(f"Extracted original post owner '{c}' via Priority 4 (DOM semantic elements)")
+            return c
 
+    for c in fallback_candidates:
+        if c != logged_in_user:
+            logger.debug(f"Extracted original post owner '{c}' via Priority 5 (DOM general links)")
+            return c
+
+    # Final fallbacks if everything else is logged_in_user or empty
+    for group, label in [
+        (json_candidates, "JSON-LD"),
+        (meta_candidates, "Meta Tags"),
+        (dom_confident_candidates, "DOM semantic elements"),
+        (fallback_candidates, "DOM general links")
+    ]:
+        if group:
+            logger.debug(f"Extracted original post owner '{group[0]}' via final fallback for {label}")
+            return group[0]
+
+    logger.debug(f"Extracted original post owner '{fallback_account}' via default fallback_account")
     return fallback_account
 
 
-def _has_aria_hidden_parent(elem: Any, page: Page) -> bool:
-    """Check if the element or any of its parent elements has aria-hidden='true'.
-
-    Args:
-        elem: Playwright ElementHandle.
-        page: Loaded Playwright Page context.
-
-    Returns:
-        True if aria-hidden='true' is found on the element or any parent, else False.
-    """
-    try:
-        return page.evaluate(
-            "(element) => {"
-            "  let current = element;"
-            "  while (current) {"
-            "    if (current.getAttribute && current.getAttribute('aria-hidden') === 'true') {"
-            "      return true;"
-            "    }"
-            "    current = current.parentElement;"
-            "  }"
-            "  return false;"
-            "}",
-            elem
-        )
-    except Exception:
-        return False
+def _is_element_horizontally_centered(elem_box: dict, scope_box: dict) -> bool:
+    """Check if an element is horizontally aligned/centered within the search scope box."""
+    elem_center_x = elem_box["x"] + (elem_box["width"] / 2)
+    scope_left = scope_box["x"]
+    scope_right = scope_box["x"] + scope_box["width"]
+    # Allow a small 15px alignment tolerance
+    return (scope_left - 15) <= elem_center_x <= (scope_right + 15)
 
 
 def _find_active_media_element(page: Page) -> tuple[Optional[Any], Optional[str]]:
-    """Find the currently active video or image element that is not hidden by aria-hidden
-    and is currently positioned within the visible viewport (active carousel slide).
+    """Find the currently active video or image element within the main media container."""
+    article_container = page.query_selector("article") or page.query_selector("body")
+    if not article_container:
+        logger.debug("No article or body container found.")
+        return None, None
 
-    Args:
-        page: Loaded Playwright Page context.
-
-    Returns:
-        A tuple of (ElementHandle, type_str) where type_str is "video" or "image", or (None, None).
-    """
-    viewport = page.viewport_size
-    viewport_width = viewport["width"] if viewport else 1280
-
+    # Try to find the specific carousel viewport within the main content area to get the alignment box
+    carousel_viewport = None
     try:
-        videos = page.query_selector_all("video")
+        carousel_viewport = article_container.query_selector(
+            "div[role='presentation'], div[role='group'][aria-label*='Carousel']"
+        )
+        if not carousel_viewport:
+            carousel_viewport = article_container.query_selector("div[style*='aspect-ratio']")
+    except Exception as e:
+        logger.debug(f"Error finding carousel viewport: {e}")
+
+    scope_element = carousel_viewport or article_container
+    scope_box = scope_element.bounding_box()
+    if not scope_box:
+        return None, None
+
+    scope_center_x = scope_box["x"] + (scope_box["width"] / 2)
+
+    # Query candidates globally within article_container to prevent container sibling/overlay exclusions
+    candidate_videos = []
+    try:
+        videos = article_container.query_selector_all("video")
         for v in videos:
-            if v.is_visible() and not _has_aria_hidden_parent(v, page):
+            if v.is_visible():
                 box = v.bounding_box()
-                if box and box["width"] > 200:
-                    # Ensure the media element's horizontal center is within the visible viewport
-                    center_x = box["x"] + (box["width"] / 2)
-                    if 0 <= center_x <= viewport_width:
-                        return v, "video"
-    except Exception:
-        pass
+                if box and box["width"] > 0 and _is_element_horizontally_centered(box, scope_box):
+                    candidate_videos.append((v, box))
+    except Exception as e:
+        logger.debug(f"Error querying videos: {e}")
 
+    candidate_images = []
     try:
-        imgs = page.query_selector_all("div._aagv img, img[style*='object-fit'], img[decoding='auto'], img")
+        imgs = article_container.query_selector_all("div._aagv img, img[style*='object-fit'], img[decoding='auto'], img")
         for img in imgs:
-            if img.is_visible() and not _has_aria_hidden_parent(img, page):
+            if img.is_visible():
                 box = img.bounding_box()
-                if box and box["width"] > 200:
-                    # Ensure the media element's horizontal center is within the visible viewport
-                    center_x = box["x"] + (box["width"] / 2)
-                    if 0 <= center_x <= viewport_width:
-                        return img, "image"
-    except Exception:
-        pass
+                if box and box["width"] > 200 and _is_element_horizontally_centered(box, scope_box):
+                    candidate_images.append((img, box))
+    except Exception as e:
+        logger.debug(f"Error querying images: {e}")
+
+
+    best_elem = None
+    best_type = None
+    min_dist = float("inf")
+
+    for idx, (v, box) in enumerate(candidate_videos):
+        center_x = box["x"] + (box["width"] / 2)
+        dist = abs(center_x - scope_center_x)
+        if dist < min_dist:
+            min_dist = dist
+            best_elem = v
+            best_type = "video"
+
+    for idx, (img, box) in enumerate(candidate_images):
+        center_x = box["x"] + (box["width"] / 2)
+        dist = abs(center_x - scope_center_x)
+        if dist < min_dist:
+            min_dist = dist
+            best_elem = img
+            best_type = "image"
+
+    # Confirm the selected element is reasonably centered inside the boundaries of the card
+    if best_elem:
+        if min_dist < (scope_box["width"] / 2):
+            return best_elem, best_type
 
     return None, None
 
@@ -506,6 +704,7 @@ def download_remaining_posts(
     stats: DownloadStats,
     db_path: Path,
     captured_video_urls: list[str],
+    captured_responses: dict[str, Any],
 ) -> None:
     """Download posts that are not already tracked in history."""
     remaining_total = sum(1 for sc in shortcodes if sc not in downloaded_shortcodes)
@@ -528,6 +727,7 @@ def download_remaining_posts(
             stats,
             db_path,
             captured_video_urls,
+            captured_responses,
         )
 
         if max_posts is not None and stats.download_count >= max_posts:
@@ -550,15 +750,27 @@ def try_download_post(
     stats: DownloadStats,
     db_path: Path,
     captured_video_urls: list[str],
+    captured_responses: dict[str, Any],
 ) -> None:
     """Download a single post (supporting carousels) using Playwright DOM queries."""
     try:
+        # Clear intercepted resources from previous post runs to avoid mismatched references
+        captured_video_urls.clear()
+        captured_responses.clear()
+
         log(f"Loading post {download_position}/{remaining_total} (shortcode: {shortcode})...")
         page.goto(f"https://www.instagram.com/p/{shortcode}/", wait_until="networkidle")
 
         # Verify if we got redirected to a login wall
         if "login" in page.url:
             raise RuntimeError("Session expired or redirected to login page. Please refresh Firefox cookies.")
+
+        # Verify that we actually landed on the post page and weren't redirected away (e.g., due to rate limit or session loss)
+        if f"/{shortcode}/" not in page.url:
+            raise RuntimeError(
+                f"Redirected away from post page! Expected URL to contain '/{shortcode}/', "
+                f"but landed on '{page.url}'. Your session may have expired or been rate-limited."
+            )
 
         # Wait up to 10 seconds for main media elements to render
         try:
@@ -578,36 +790,91 @@ def try_download_post(
         )
         max_slides = 30 if is_carousel else 1
 
-        media_items = []
+        try:
+            user_agent = page.evaluate("navigator.userAgent")
+        except Exception:
+            user_agent = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+
+        media_items_data = []
         video_counter = 0
 
-        # Traverse carousel slides
+        # Traverse carousel slides and download payloads on-the-fly
         for slide_idx in range(max_slides):
-            active_elem, elem_type = _find_active_media_element(page)
-            if not active_elem:
-                break
+            if is_carousel and slide_idx > 0:
+                last_active_src = active_elem.get_attribute("src") if active_elem else None
+                logger.debug(f"Transition check: waiting for slide {slide_idx+1}. Last active src: {last_active_src[:100] if last_active_src else 'None'}...")
+                transitioned = False
+                active_elem = None
+                elem_type = None
+                for poll_idx in range(25):  # Poll up to 5 seconds
+                    new_active_elem, new_elem_type = _find_active_media_element(page)
+                    if new_active_elem:
+                        new_src = new_active_elem.get_attribute("src")
+                        if new_src != last_active_src:
+                            active_elem = new_active_elem
+                            elem_type = new_elem_type
+                            transitioned = True
+                            logger.debug(f"Transition successful! Slide {slide_idx+1} loaded on poll {poll_idx+1}.")
+                            break
+                    page.wait_for_timeout(200)
+                if not transitioned or not active_elem:
+                    logger.info("Reached the end of the carousel or slide transition stalled. Stopping traversal.")
+                    break
+            else:
+                active_elem, elem_type = _find_active_media_element(page)
+                if not active_elem:
+                    break
 
             video_elem = active_elem if elem_type == "video" else None
             img_elem = active_elem if elem_type == "image" else None
 
+            # Wait up to 5 seconds for the active element's src attribute to be populated with a valid URL
+            media_url = None
+            for _ in range(50):
+                media_url = active_elem.get_attribute("src")
+                if media_url and (media_url.startswith("http") or media_url.startswith("blob:")):
+                    break
+                page.wait_for_timeout(100)
+
+            logger.info(f"Slide {slide_idx + 1} active element: {elem_type}, initial media_url: {media_url}")
+
             if video_elem:
-                media_url = video_elem.get_attribute("src")
                 if media_url and media_url.startswith("blob:"):
+                    logger.info("Muted blob URL detected, triggering video playback to capture streaming assets...")
                     # Force video elements to play (muted) to trigger browser streaming requests
                     try:
-                        page.evaluate("const v = document.querySelector('video'); if (v) { v.muted = true; v.play().catch(() => {}); }")
-                        page.wait_for_timeout(2000)
-                    except Exception:
-                        pass
+                        page.evaluate("(v) => { if (v) { v.muted = true; v.play().catch(() => {}); } }", video_elem)
+                        # Give some time for network requests to fire and be captured
+                        page.wait_for_timeout(1000) # Initial wait
+                        
+                        # Poll captured_video_urls for up to 5 seconds
+                        start_time = time.time()
+                        while (len(captured_video_urls) <= video_counter) and (time.time() - start_time < 5):
+                            page.wait_for_timeout(200) # Poll every 200ms
+                        
+                        if not captured_video_urls:
+                            logger.warning("No video URLs were captured after triggering playback and polling.")
+                        else:
+                            logger.info(f"Video URLs captured after playback: {captured_video_urls}")
+                    except Exception as e:
+                        logger.warning(f"Failed to trigger video playback or poll for video response: {e}")
 
+                    # After attempting to trigger playback and capture, check captured_video_urls
+                    logger.info(f"Captured video URLs so far: {captured_video_urls}")
                     if video_counter < len(captured_video_urls):
                         media_url = captured_video_urls[video_counter]
+                        logger.info(f"Resolved blob to captured URL: {media_url}")
                     elif captured_video_urls:
                         media_url = captured_video_urls[-1]
+                        logger.info(f"Resolved blob to last captured URL: {media_url}")
                     else:
                         meta_video = page.query_selector("meta[property='og:video']")
                         if meta_video:
                             media_url = meta_video.get_attribute("content")
+                            logger.info(f"Resolved blob to meta property og:video: {media_url}")
                         
                         # Fallback: Parse progressive mp4 CDN streams directly from hydrated page metadata
                         if not media_url or media_url.startswith("blob:"):
@@ -621,7 +888,12 @@ def try_download_post(
                                     decoded_content
                                 )
                                 if mp4_matches:
-                                    media_url = mp4_matches[0]
+                                    # Strip trailing XML tags, HTML entities, quotes, or whitespace captured by the wildcard
+                                    raw_match = mp4_matches[0]
+                                    cleaned_match = re.split(r'(?:&lt;|&gt;|<|>|\\u|\\n|\\t|")', raw_match)[0]
+                                    # Unescape HTML entities like &amp; to &
+                                    media_url = html.unescape(cleaned_match)
+                                    logger.info(f"Resolved blob to parsed HTML match: {media_url}")
                             except Exception as parse_exc:
                                 logger.warning(f"Failed to parse progressive mp4 from page content: {parse_exc}")
                         
@@ -630,7 +902,6 @@ def try_download_post(
                 ext = "mp4"
                 video_counter += 1
             elif img_elem:
-                media_url = img_elem.get_attribute("src")
                 ext = "jpg"
             else:
                 break
@@ -639,35 +910,167 @@ def try_download_post(
                 break
 
             # Prevent double-processing or infinite loops on same item
-            if any(item["url"] == media_url for item in media_items):
+            if any(item["url"] == media_url for item in media_items_data):
+                logger.info("Duplicate media item detected after transition. Stopping traversal.")
                 break
 
-            media_items.append({"url": media_url, "ext": ext})
+            # Download media bytes immediately while the element is active and mounted
+            media_bytes = None
+            tier_reports = []
+
+            # Tier 1: Check captured network responses (direct hit!)
+            if media_url in captured_responses:
+                try:
+                    media_bytes = captured_responses[media_url].body()
+                    logger.info(f"Retrieved {media_url[:100]}... directly from captured network responses.")
+                    tier_reports.append("Tier 1 (Direct Cache): Success")
+                except Exception as body_exc:
+                    logger.info(f"Failed to get body from captured response for {media_url[:100]}...: {body_exc}")
+                    tier_reports.append(f"Tier 1 (Direct Cache): Failed to read body - {body_exc}")
+            else:
+                tier_reports.append("Tier 1 (Direct Cache): URL not captured in network events")
+
+            if media_bytes is None:
+                # Fuzzy path match in case of minor query param discrepancies
+                try:
+                    item_path = media_url.split('?')[0]
+                    matched_fuzzy = False
+                    for cap_url, cap_resp in captured_responses.items():
+                        if cap_url.split('?')[0] == item_path:
+                            media_bytes = cap_resp.body()
+                            logger.info(f"Retrieved {media_url[:100]}... via fuzzy path match from captured responses.")
+                            tier_reports.append("Tier 1 (Fuzzy Match): Success")
+                            matched_fuzzy = True
+                            break
+                    if not matched_fuzzy:
+                        tier_reports.append("Tier 1 (Fuzzy Match): No matching URL path found in cache")
+                except Exception as fuzzy_exc:
+                    logger.info(f"Fuzzy match body retrieval failed: {fuzzy_exc}")
+                    tier_reports.append(f"Tier 1 (Fuzzy Match): Failure - {fuzzy_exc}")
+
+            # Tier 2: Canvas extraction for the active image element
+            if ext == "jpg":
+                if media_bytes is None:
+                    try:
+                        js_canvas = """
+                        (img) => {
+                            if (!img) return null;
+                            const canvas = document.createElement('canvas');
+                            canvas.width = img.naturalWidth || img.width;
+                            canvas.height = img.naturalHeight || img.height;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0);
+                            return canvas.toDataURL('image/jpeg').split(',')[1];
+                        }
+                        """
+                        base64_data = page.evaluate(js_canvas, active_elem)
+                        if base64_data:
+                            media_bytes = base64.b64decode(base64_data)
+                            logger.info(f"Retrieved {media_url[:100]}... via Canvas extraction.")
+                            tier_reports.append("Tier 2 (Canvas Read): Success")
+                        else:
+                            tier_reports.append("Tier 2 (Canvas Read): Canvas returned empty data")
+                    except Exception as canvas_exc:
+                        logger.info(f"Canvas extraction failed for active element: {canvas_exc}")
+                        tier_reports.append(f"Tier 2 (Canvas Read): Failed - {canvas_exc}")
+            else:
+                tier_reports.append("Tier 2 (Canvas Read): Skipped (not a JPEG)")
+
+            # Tier 3: In-page fetch fallback
+            if media_bytes is None:
+                try:
+                    js_fetch = """
+                    async (url) => {
+                        const response = await fetch(url);
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        const blob = await response.blob();
+                        return new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                                const base64Str = reader.result.split(',')[1];
+                                resolve(base64Str);
+                            };
+                            reader.onerror = () => reject(new Error('FileReader failed'));
+                            reader.readAsDataURL(blob);
+                        });
+                    }
+                    """
+                    base64_data = page.evaluate(js_fetch, media_url)
+                    media_bytes = base64.b64decode(base64_data)
+                    logger.info(f"Retrieved {media_url[:100]}... via in-page fetch.")
+                    tier_reports.append("Tier 3 (In-page Fetch): Success")
+                except Exception as fetch_exc:
+                    logger.info(f"In-page fetch failed for {media_url[:100]}...: {fetch_exc}")
+                    tier_reports.append(f"Tier 3 (In-page Fetch): Failed - {fetch_exc}")
+
+            # Tier 4: Background Context fetch fallback (last resort)
+            if media_bytes is None:
+                try:
+                    response = context.request.get(
+                        media_url,
+                        headers={"Referer": "https://www.instagram.com/", "User-Agent": user_agent}
+                    )
+                    if response.status == 200:
+                        media_bytes = response.body()
+                        logger.info(f"Retrieved {media_url[:100]}... via Tier 4 context fetch.")
+                        tier_reports.append("Tier 4 (Context Request): Success")
+                    else:
+                        tier_reports.append(f"Tier 4 (Context Request): HTTP {response.status}")
+                except Exception as req_exc:
+                    logger.info(f"Tier 4 context fetch failed for {media_url[:100]}...: {req_exc}")
+                    tier_reports.append(f"Tier 4 (Context Request): Failed - {req_exc}")
+
+            # Tier 5: Element screenshot fallback (absolute failsafe for images)
+            if ext == "jpg":
+                if media_bytes is None:
+                    try:
+                        media_bytes = active_elem.screenshot(type="jpeg", quality=95)
+                        logger.info(f"Retrieved {media_url[:100]}... via Tier 5 element screenshot fallback.")
+                        tier_reports.append("Tier 5 (Screenshot Failsafe): Success")
+                    except Exception as ss_exc:
+                        logger.info(f"Tier 5 element screenshot fallback failed: {ss_exc}")
+                        tier_reports.append(f"Tier 5 (Screenshot Failsafe): Failed - {ss_exc}")
+            else:
+                tier_reports.append("Tier 5 (Screenshot Failsafe): Skipped (not a JPEG)")
+
+            if media_bytes is None:
+                reports_summary = " -> ".join(tier_reports)
+                raise RuntimeError(f"All retrieval tiers exhausted. Details: {reports_summary}")
+
+            media_items_data.append({"bytes": media_bytes, "ext": ext, "url": media_url})
 
             # Slide to the next media item if we are in a carousel
             if is_carousel:
-                next_btn = _find_next_button(page)
+                next_btn = _find_next_button(page, active_elem)
                 moved = False
                 if next_btn and next_btn.is_visible():
                     try:
+                        logger.debug("Attempting to click Next button...")
                         next_btn.click(force=True)
                         page.wait_for_timeout(1500)
                         moved = True
-                    except Exception:
-                        pass
+                        logger.debug("Successfully clicked Next button.")
+                    except Exception as click_err:
+                        logger.debug(f"Failed to click Next button: {click_err}")
+                else:
+                    logger.debug(f"Next button visible check: {next_btn.is_visible() if next_btn else 'No button found'}")
                 
                 if not moved:
                     try:
+                        logger.debug("Attempting keyboard ArrowRight fallback...")
                         # Focus on main presentation/media element to ensure keys target the post slider
                         media_container = page.query_selector("article, div._aagw, div[role='presentation']")
                         if media_container:
                             media_container.focus()
                         page.keyboard.press("ArrowRight")
                         page.wait_for_timeout(1500)
-                    except Exception:
-                        pass
+                        logger.debug("Keyboard ArrowRight event sent.")
+                    except Exception as kb_err:
+                        logger.debug(f"Keyboard fallback failed: {kb_err}")
 
-        if not media_items:
+        if not media_items_data:
             raise ValueError("No media element found for this post structure.")
 
         # Extract original post owner username (Instaloader legacy standard)
@@ -704,20 +1107,17 @@ def try_download_post(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for idx, item in enumerate(media_items):
-            response = context.request.get(item["url"])
-            if response.status != 200:
-                raise RuntimeError(f"Failed to fetch media payload (status {response.status})")
-
-            if len(media_items) > 1:
+        for idx, item in enumerate(media_items_data):
+            if len(media_items_data) > 1:
                 filename = f"{owner_username}_{timestamp_str}_{idx + 1}.{item['ext']}"
             else:
                 filename = f"{owner_username}_{timestamp_str}.{item['ext']}"
             
             file_path = output_dir / filename
             with open(file_path, "wb") as f:
-                f.write(response.body())
-            log(f"Downloaded {file_path}")
+                f.write(item["bytes"])
+            file_size_kb = len(item["bytes"]) / 1024
+            log(f"Downloaded {file_path} ({file_size_kb:.1f} KB)")
 
         stats.download_count += 1
         downloaded_shortcodes.add(shortcode)
@@ -728,7 +1128,7 @@ def try_download_post(
         total_avail = stats.total_posts_available if stats.total_posts_available else "unknown"
         
         log(
-            f"Completed download of post {shortcode} with {len(media_items)} items "
+                f"Completed download of post {shortcode} with {len(media_items_data)} items "
             f"({stats.download_count}/{max_display} this session - "
             f"Archive: {archive_count}/{total_avail})"
         )

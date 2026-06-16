@@ -30,6 +30,8 @@ stays responsive.
      `asyncio.to_thread`.
    - Streams downloader log output through a thread-safe callback and edits the
      initial status message with live progress.
+   - Falls back to fetching the status message as a normal channel message if a
+     long-running interaction webhook token expires.
    - Truncates returned reports before sending them to Discord.
    - Sends owner DMs when the bot goes online and when it shuts down cleanly.
    - Writes runtime logs to both standard output and timestamped files under
@@ -41,10 +43,15 @@ stays responsive.
    - Organizes auth, configuration, history tracking, reporting, timing,
      logging, and session orchestration in focused modules under `downloader/`.
    - Handles Instagram authentication by importing cookies from an active
-     Firefox profile.
+     Firefox profile, grouping cookies by Firefox container partition, and
+     testing each jar until one can access the requested account.
    - Supports one or more comma-separated Instagram usernames from
      `settings.ini`.
-   - Fetches saved posts for each configured user.
+   - Fetches saved posts for each configured user, including post and reel
+     links from the saved-posts grid.
+   - Downloads post and carousel media through Playwright using captured
+     network responses, blob-video stream resolution, in-page fetches, context
+     requests, canvas extraction, and image screenshot fallback.
    - Uses account-specific SQLite databases (`download_history_<account>.db`) to
      track downloaded shortcodes and prevent duplicates.
    - Prunes downloaded-post history for shortcodes that are no longer in the
@@ -77,7 +84,8 @@ stays responsive.
 
 - `downloader.auth`: Session loading helpers and Firefox cookie import.
 - `downloader.config`: `settings.ini` parsing and typed config object.
-- `downloader.downloads`: Saved-post retrieval, duplicate filtering, downloads,
+- `downloader.downloads`: Saved-post retrieval, Firefox cookie-jar selection,
+  duplicate filtering, carousel traversal, layered media downloads,
   configurable storage paths, owner/timestamp-based filenames, per-post error
   capture, and rate-limit friendly delays.
 - `downloader.history`: SQLite schema setup, shortcode reads/writes, and stale
@@ -96,15 +104,17 @@ stays responsive.
 2. Bot verifies the invoking user matches `allowed_user_id`, checks that no
    other downloads are running, locks the session, and delegates to the
    downloader engine in a background thread.
-3. Downloader loads config, locates Firefox's active Instagram cookies, and
-   launches a headless Chromium session with those cookies.
-4. Downloader queries Instagram for saved posts and compares shortcodes against
-   the account-specific history database.
+3. Downloader loads config, locates Firefox's active Instagram cookies, groups
+   them by container partition, and launches headless Chromium contexts until
+   one can access the requested account's saved-posts page.
+4. Downloader queries Instagram for saved posts and reels, then compares
+   shortcodes against the account-specific history database.
 5. Stale shortcode rows for unsaved posts are pruned from history.
-6. New posts are downloaded locally, and successful downloads are recorded with
-   `INSERT OR IGNORE`.
-7. Downloader log messages are forwarded to Discord as live status-message
+6. New posts are opened individually; active media is captured from the DOM,
+   network responses, and fallback retrieval tiers before being written locally.
+7. Successful downloads are recorded with `INSERT OR IGNORE`.
+8. Downloader log messages are forwarded to Discord as live status-message
    edits while the session runs.
-8. A text summary is generated and returned to the bot.
-9. The bot truncates the summary if needed, sends it to Discord, and unlocks
+9. A text summary is generated and returned to the bot.
+10. The bot truncates the summary if needed, sends it to Discord, and unlocks
    the session.
