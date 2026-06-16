@@ -1,26 +1,23 @@
 """Download session orchestration."""
 
 import random
-import sys
 from datetime import datetime
 from typing import Optional
 
-import instaloader
-
-from downloader.auth import get_cookiefile, import_session
-from downloader.config import DownloaderConfig, load_downloader_config
-from downloader.downloads import HISTORY_DB_PATH, download_saved_posts
+from downloader.config import load_downloader_config
+from downloader.downloads import download_saved_posts
+from downloader.history import get_history_db_path
 from downloader.logging_utils import log
 from downloader.reporting import build_report
 from downloader.timing import sleep_with_countdown
-from downloader.version import check_instaloader_version
 
 
-def run_download_session(max_posts: Optional[int] = None) -> str:
-    """Run the download session and return a report string.
+def run_download_session(max_posts: Optional[int] = None, target_account: Optional[str] = None) -> str:
+    """Run the Playwright download session and return a report string.
 
     Args:
         max_posts: Optional maximum number of posts to download this session.
+        target_account: Optional specific Instagram account name to target.
 
     Returns:
         Text report describing the session outcome.
@@ -29,36 +26,58 @@ def run_download_session(max_posts: Optional[int] = None) -> str:
         RuntimeError: If authentication fails.
     """
 
-    check_instaloader_version()
     log("")
 
     config = load_downloader_config()
+    accounts = config.ig_names
+    if not accounts:
+        raise RuntimeError("No Instagram accounts configured in settings.ini under [Credentials] ig_name.")
+
+    if target_account:
+        target_account = target_account.strip()
+        if target_account not in accounts:
+            raise ValueError(
+                f"Target account '{target_account}' is not in configured accounts: {', '.join(accounts)}"
+            )
+        accounts = [target_account]
+
     start_time = datetime.now()
     log(f"Script started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
 
-    loader = _create_instaloader()
-    _authenticate_loader(loader, config)
-    sleep_with_countdown(
-        random.randint(15, 60),
-        "Sleeping for {delay} seconds before starting downloads...",
-        "  Starting downloads in {remaining} seconds...",
-    )
+    reports = []
+    for account in accounts:
+        log(f"\n>>> Starting session for account: {account} <<<")
+        sleep_with_countdown(
+            random.randint(5, 15),
+            "Sleeping for {delay} seconds before starting browser session...",
+            "  Starting downloads in {remaining} seconds...",
+        )
 
-    try:
-        stats = download_saved_posts(loader, config.ig_name, max_posts)
-    finally:
-        loader.save_session_to_file()
+        try:
+            db_path = get_history_db_path(account)
+            stats = download_saved_posts(account, max_posts)
+            end_time = datetime.now()
+            
+            account_report = build_report(
+                account,
+                start_time,
+                end_time,
+                max_posts,
+                db_path,
+                stats,
+            )
+            reports.append(account_report)
+        except Exception as exc:
+            log(f"❌ Error running download session for {account}: {exc}")
+            reports.append(
+                f"============================================================\n"
+                f"Session Report for {account} (FAILED)\n"
+                f"Error: {exc}\n"
+                f"============================================================"
+            )
 
-    end_time = datetime.now()
-    return build_report(
-        config.ig_name,
-        start_time,
-        end_time,
-        max_posts,
-        HISTORY_DB_PATH,
-        stats,
-    )
+    return "\n\n".join(reports)
 
 
 def prompt_for_max_posts() -> Optional[int]:
@@ -83,118 +102,3 @@ def prompt_for_max_posts() -> Optional[int]:
             return max_posts
         except ValueError:
             log("Please enter a valid integer.")
-
-
-def _create_instaloader() -> instaloader.Instaloader:
-    """Create the configured Instaloader instance.
-
-    Returns:
-        Instaloader instance configured for this project.
-    """
-
-    return instaloader.Instaloader(
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=False,
-        post_metadata_txt_pattern="",
-        filename_pattern="{profile}_{date_utc:%Y-%m-%d_%H-%M-%S}",
-    )
-
-
-def _authenticate_loader(
-    loader: instaloader.Instaloader,
-    config: DownloaderConfig,
-) -> None:
-    """Authenticate an Instaloader instance.
-
-    Args:
-        loader: Instaloader instance to authenticate.
-        config: Downloader credentials.
-
-    Raises:
-        RuntimeError: If no authentication method succeeds.
-    """
-
-    try:
-        loader.load_session_from_file(config.ig_name)
-        if not loader.test_login():
-            raise instaloader.exceptions.BadCredentialsException(
-                "Session expired or invalid."
-            )
-        log("Session successfully loaded and verified from file...")
-    except (
-        FileNotFoundError,
-        instaloader.exceptions.BadCredentialsException,
-        instaloader.exceptions.ConnectionException,
-    ) as exc:
-        log(f"No valid session found ({exc}), attempting manual login...")
-        _login_and_save_session(loader, config)
-
-
-def _login_and_save_session(
-    loader: instaloader.Instaloader,
-    config: DownloaderConfig,
-) -> None:
-    """Login manually or through Firefox cookies, then save the session.
-
-    Args:
-        loader: Instaloader instance to authenticate.
-        config: Downloader credentials.
-
-    Raises:
-        RuntimeError: If login and cookie extraction fail.
-    """
-
-    try:
-        if not config.password:
-            raise instaloader.exceptions.BadCredentialsException(
-                "No password provided in settings.ini"
-            )
-        loader.login(config.ig_name, config.password)
-    except instaloader.exceptions.TwoFactorAuthRequiredException:
-        _complete_two_factor_login(loader)
-    except (
-        instaloader.exceptions.BadCredentialsException,
-        instaloader.exceptions.ConnectionException,
-        instaloader.exceptions.LoginException,
-    ) as exc:
-        log(f"Login failed ({exc}). Attempting to extract Firefox cookies...")
-        cookiefile = get_cookiefile()
-        if cookiefile:
-            import_session(cookiefile, loader)
-        else:
-            raise RuntimeError(
-                "No Firefox cookies found and manual login failed."
-            ) from exc
-
-    loader.save_session_to_file()
-
-
-def _complete_two_factor_login(loader: instaloader.Instaloader) -> None:
-    """Prompt until two-factor authentication succeeds.
-
-    Args:
-        loader: Instaloader instance waiting for two-factor auth.
-
-    Raises:
-        RuntimeError: If two-factor authentication is required but the script
-            is running non-interactively.
-    """
-
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "Two-Factor Authentication is required. Please run the downloader script "
-            "interactively in a terminal to authenticate and save the session."
-        )
-
-    while True:
-        try:
-            two_fa_code = input(
-                "Enter 6-digit 2 Factor Authentication code "
-                "from authenticator app: "
-            )
-            loader.two_factor_login(two_fa_code)
-            return
-        except instaloader.exceptions.BadCredentialsException:
-            pass

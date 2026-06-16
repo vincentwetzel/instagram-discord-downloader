@@ -3,6 +3,7 @@
 import asyncio
 import configparser
 import ctypes
+import datetime
 import logging
 import os
 import socket
@@ -14,12 +15,41 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+# Ensure logs directory exists
+logs_dir = Path("logs")
+logs_dir.mkdir(exist_ok=True)
+
+def clean_old_logs(directory: Path, keep_count: int = 5) -> None:
+    """Delete oldest log files to keep only a specific number of historical runs."""
+    try:
+        log_files = list(directory.glob("discord_bot_*.log"))
+        # Sort by modification time (oldest first)
+        log_files.sort(key=lambda p: p.stat().st_mtime)
+        
+        # Since we are about to create a new log file, keep at most keep_count - 1 existing ones
+        if len(log_files) >= keep_count:
+            excess = len(log_files) - (keep_count - 1)
+            for i in range(excess):
+                try:
+                    log_files[i].unlink()
+                except Exception as e:
+                    sys.stderr.write(f"Failed to delete old log file {log_files[i]}: {e}\n")
+    except Exception as e:
+        sys.stderr.write(f"Error cleaning old logs: {e}\n")
+
+# Clean old logs and keep only the 5 most recent runs
+clean_old_logs(logs_dir, keep_count=5)
+
+# Create a unique timestamped log file for this run
+timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+log_file_path = logs_dir / f"discord_bot_{timestamp_str}.log"
+
 # Set up logging to both a file and standard output
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler("discord_bot.log", encoding="utf-8"),
+        logging.FileHandler(log_file_path, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -132,6 +162,15 @@ async def on_message(message: discord.Message) -> None:
                 send_final=message.channel.send,
             )
             return
+        elif content_stripped:
+            await _handle_download_session(
+                user_id=message.author.id,
+                max_posts=None,
+                send_initial=message.channel.send,
+                send_final=message.channel.send,
+                target_account=content_stripped,
+            )
+            return
 
     await bot.process_commands(message)
 
@@ -141,6 +180,7 @@ async def _handle_download_session(
     send_initial: Callable[[str], Awaitable[Any]],
     send_final: Callable[[str], Awaitable[Any]],
     interaction: Optional[discord.Interaction] = None,
+    target_account: Optional[str] = None,
 ) -> None:
     """Shared logic for prefix and slash download commands.
 
@@ -150,6 +190,7 @@ async def _handle_download_session(
         send_initial: Async callable to send the initial response.
         send_final: Async callable to send the final report.
         interaction: Optional slash command interaction context.
+        target_account: Optional specific Instagram account name to target.
     """
     if str(user_id) != ALLOWED_USER_ID:
         await send_initial("❌ You are not authorized to use this command.")
@@ -170,7 +211,9 @@ async def _handle_download_session(
         return
 
     async with lock:
-        limit_text = f"limited to {max_posts} posts" if max_posts else "with no limit"
+        limit_text = f"limited to {max_posts} posts" if max_posts else "unlimited"
+        if target_account:
+            limit_text += f" for account '{target_account}'"
         
         status_msg: Optional[discord.Message] = None
         try:
@@ -203,6 +246,7 @@ async def _handle_download_session(
         log_lines: list[str] = []
 
         async def update_status_loop() -> None:
+            nonlocal status_msg
             last_update_time = 0.0
             update_needed = False
             try:
@@ -237,6 +281,15 @@ async def _handle_download_session(
                             )
                             last_update_time = now
                             update_needed = False
+                        except discord.NotFound:
+                            logger.warning("Status message was deleted; stopping live progress updates.")
+                            status_msg = None
+                        except discord.HTTPException as edit_err:
+                            if edit_err.code == 50027:
+                                logger.warning("Webhook token expired; stopping live progress updates.")
+                                status_msg = None
+                            else:
+                                logger.error(f"Failed to edit status message: {edit_err}")
                         except Exception as edit_err:
                             logger.error(f"Failed to edit status message: {edit_err}")
             except asyncio.CancelledError:
@@ -257,7 +310,7 @@ async def _handle_download_session(
         try:
             # Use asyncio.to_thread so the synchronous script doesn't
             # freeze the Discord bot
-            report = await asyncio.to_thread(run_download_session, max_posts)
+            report = await asyncio.to_thread(run_download_session, max_posts, target_account)
             
             # Ensure total message doesn't exceed Discord's 2000 char limit
             max_report_len = 1900
@@ -286,16 +339,29 @@ async def _handle_download_session(
 
 @bot.command(
     name="download",
-    help="Run the Instagram downloader. Example: !download 10",
+    help="Run the Instagram downloader. Examples: !download, !download 10, !download account_b, !download 10 account_b",
 )
-async def download(ctx: commands.Context, max_posts: Optional[int] = None) -> None:
+async def download(
+    ctx: commands.Context,
+    arg1: Optional[str] = None,
+    arg2: Optional[str] = None,
+) -> None:
     """Legacy prefix command handler (!download).
 
     Args:
         ctx: Discord command context.
-        max_posts: Optional limit on posts to download.
+        arg1: Optional digit limit or targeted account name.
+        arg2: Optional targeted account name (if arg1 was a digit).
     """
-    await _handle_download_session(ctx.author.id, max_posts, ctx.send, ctx.send)
+    max_posts = None
+    target_account = None
+    if arg1 is not None:
+        if arg1.isdigit():
+            max_posts = int(arg1)
+            target_account = arg2
+        else:
+            target_account = arg1
+    await _handle_download_session(ctx.author.id, max_posts, ctx.send, ctx.send, target_account=target_account)
 
 @download.error
 async def download_error(ctx: commands.Context, error: commands.CommandError) -> None:
@@ -312,15 +378,21 @@ async def download_error(ctx: commands.Context, error: commands.CommandError) ->
         )
 
 @bot.tree.command(name="ig_download", description="Run the Instagram downloader.")
-@app_commands.describe(max_posts="Maximum number of posts to download (optional)")
+@app_commands.describe(
+    max_posts="Maximum number of posts to download (optional)",
+    target_account="Specific account to download from (optional)"
+)
 async def slash_download(
-    interaction: discord.Interaction, max_posts: Optional[int] = None
+    interaction: discord.Interaction,
+    max_posts: Optional[int] = None,
+    target_account: Optional[str] = None,
 ) -> None:
     """Modern slash command handler (/ig_download).
 
     Args:
         interaction: Discord slash command interaction.
         max_posts: Optional limit on posts to download.
+        target_account: Optional specific account name to target.
     """
     
     async def send_final_safe(msg: str) -> Union[discord.Message, discord.WebhookMessage, None]:
@@ -334,8 +406,10 @@ async def slash_download(
         """
         try:
             return await interaction.followup.send(msg)
-        except discord.NotFound:
-            # Webhook expired (takes > 15 mins), try sending to channel directly
+        except (discord.NotFound, discord.HTTPException) as e:
+            if not isinstance(e, discord.NotFound) and e.code != 50027:
+                raise
+            # Webhook expired (takes > 15 mins) or not found, try sending to channel directly
             if isinstance(interaction.channel, discord.abc.Messageable):
                 try:
                     return await interaction.channel.send(
@@ -350,6 +424,7 @@ async def slash_download(
         interaction.response.send_message,
         send_final_safe,
         interaction=interaction,
+        target_account=target_account,
     )
 
 def _enforce_single_instance() -> socket.socket:

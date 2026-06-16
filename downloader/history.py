@@ -5,6 +5,17 @@ from pathlib import Path
 from sqlite3 import OperationalError, connect
 from typing import Union
 
+def get_history_db_path(account_name: str) -> Path:
+    """Return the account-specific SQLite database path.
+
+    Args:
+        account_name: The Instagram account username.
+
+    Returns:
+        Path to the SQLite database file for this account.
+    """
+    return Path(f"download_history_{account_name}.db")
+
 
 def init_history_db(filepath: Union[str, Path]) -> None:
     """Initialize SQLite database with the download history table.

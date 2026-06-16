@@ -57,9 +57,10 @@ and application stability.
 
 ## 3. Database Guidelines
 
-- **Idempotency:** When interacting with the SQLite database
-  (`download_history.db`), rely on SQL constraints to maintain idempotency. Use
-  `INSERT OR IGNORE` to prevent duplicate tracking of downloaded posts.
+- **Idempotency:** When interacting with the account-specific SQLite databases
+  (`download_history_<account>.db`), rely on SQL constraints to maintain
+  idempotency. Use `INSERT OR IGNORE` to prevent duplicate tracking of
+  downloaded posts.
 - **History Syncing:** Changes to how posts are considered downloaded, skipped,
   or stale must update `downloader.history` and any affected report counters.
 - **Connection Management:** Ensure all database connections are committed when
@@ -81,10 +82,12 @@ and application stability.
 ## 5. Security
 
 - **Credentials:** Never hardcode Discord tokens, Instagram usernames, or
-  passwords in source code. Use `configparser` to read from `settings.ini`.
-- **Version Control:** Ensure `settings.ini`, `download_history.db`, downloaded
-  media files, session artifacts, and Python caches are excluded from version
-  control through `.gitignore`.
+  browser session details in source code. Use `configparser` to read usernames
+  and Discord credentials from `settings.ini`; derive Instagram authentication
+  from the user's active Firefox cookies.
+- **Version Control:** Ensure `settings.ini`, `download_history*`, downloaded
+  media files, browser session artifacts, logs, and Python caches are excluded
+  from version control through `.gitignore`.
 
 ## 6. Versioning, Workflow & Changelog
 

@@ -1,11 +1,11 @@
 # Local runtime state
-download_history.db
+download_history*
 settings.ini
 /.VSCodeCounter
-discord_bot.log
+/logs
 
 # Downloaded Instagram media
-vincentwetzel/
+downloads/
 
 # Python cache/build output
 __pycache__/

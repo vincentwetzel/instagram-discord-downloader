@@ -3,7 +3,7 @@
 ## Overview
 
 The Instagram Discord Downloader has two user-facing entry points backed by one
-synchronous downloader engine:
+synchronous browser-automation downloader engine:
 
 - `discord_bot.py` exposes the Discord `/ig_download [max_posts]`,
   `!download [limit]`, and owner-DM numeric limit commands.
@@ -32,22 +32,23 @@ stays responsive.
      initial status message with live progress.
    - Truncates returned reports before sending them to Discord.
    - Sends owner DMs when the bot goes online and when it shuts down cleanly.
-   - Writes runtime logs to both standard output and `discord_bot.log`, with
-     uncaught exceptions routed through the same logger.
+   - Writes runtime logs to both standard output and timestamped files under
+     `logs/`, with uncaught exceptions routed through the same logger.
 
 2. **Downloader Engine (`instaloader_downloader.py`, `downloader/`)**
-   - Built on top of `instaloader`.
+   - Built on top of Playwright with Firefox cookie import.
    - Keeps `instaloader_downloader.py` as the compatibility entry point.
-   - Organizes auth, configuration, history tracking, reporting, version
-     checks, and session orchestration in focused modules under `downloader/`.
-   - Handles Instagram authentication with password, 2FA, or Firefox cookie
-     extraction.
-   - Fetches saved posts for the configured user.
-   - Uses a local SQLite database (`download_history.db`) to track downloaded
-     shortcodes and prevent duplicates.
+   - Organizes auth, configuration, history tracking, reporting, timing,
+     logging, and session orchestration in focused modules under `downloader/`.
+   - Handles Instagram authentication by importing cookies from an active
+     Firefox profile.
+   - Supports one or more comma-separated Instagram usernames from
+     `settings.ini`.
+   - Fetches saved posts for each configured user.
+   - Uses account-specific SQLite databases (`download_history_<account>.db`) to
+     track downloaded shortcodes and prevent duplicates.
    - Prunes downloaded-post history for shortcodes that are no longer in the
      current saved-post list.
-   - Features automatic Instaloader version checking and upgrading.
    - Generates a textual report of the download session.
 
 3. **Configuration (`settings.ini`)**
@@ -56,10 +57,10 @@ stays responsive.
    - Lives outside version control because it contains local secrets.
 
 4. **Runtime State**
-   - `download_history.db` stores downloaded post shortcodes.
-   - `discord_bot.log` stores local bot startup, shutdown, and error logs.
-   - The configured Instagram account folder stores downloaded media.
-   - Instaloader session files may be created locally after successful login.
+   - `download_history_<account>.db` stores downloaded post shortcodes.
+   - `logs/discord_bot_<timestamp>.log` stores local bot startup, shutdown, and
+     error logs. Older run logs are pruned automatically.
+   - `downloads/` stores downloaded media.
 
 5. **Windows Bot Helpers (`start_bot.bat`, `stop_bot.bat`)**
    - `start_bot.bat` launches `discord_bot.py` in the background with
@@ -72,7 +73,8 @@ stays responsive.
 - `downloader.auth`: Session loading helpers and Firefox cookie import.
 - `downloader.config`: `settings.ini` parsing and typed config object.
 - `downloader.downloads`: Saved-post retrieval, duplicate filtering, downloads,
-  per-post error capture, and rate-limit friendly delays.
+  owner/timestamp-based filenames, per-post error capture, and rate-limit
+  friendly delays.
 - `downloader.history`: SQLite schema setup, shortcode reads/writes, and stale
   history pruning.
 - `downloader.logging_utils`: Timestamped console logging helpers and optional
@@ -81,7 +83,6 @@ stays responsive.
   generation.
 - `downloader.session`: High-level orchestration for a full download run.
 - `downloader.timing`: Countdown sleep helper.
-- `downloader.version`: Instaloader version check and optional pip upgrade.
 
 ## Data Flow
 
@@ -90,10 +91,10 @@ stays responsive.
 2. Bot verifies the invoking user matches `allowed_user_id`, checks that no
    other downloads are running, locks the session, and delegates to the
    downloader engine in a background thread.
-3. Downloader checks the local Instaloader version, loads config, and
-   authenticates using the saved session, credentials, 2FA, or Firefox cookies.
+3. Downloader loads config, locates Firefox's active Instagram cookies, and
+   launches a headless Chromium session with those cookies.
 4. Downloader queries Instagram for saved posts and compares shortcodes against
-   `download_history.db`.
+   the account-specific history database.
 5. Stale shortcode rows for unsaved posts are pruned from history.
 6. New posts are downloaded locally, and successful downloads are recorded with
    `INSERT OR IGNORE`.

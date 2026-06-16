@@ -1,24 +1,26 @@
 # Instagram Discord Downloader
 
 A Discord bot and command-line downloader for saving new Instagram saved posts
-to your local machine with Instaloader. Downloads are tracked in SQLite so
-repeat runs skip posts that were already saved.
+to your local machine with Playwright-driven browser automation. Downloads are
+tracked in account-specific SQLite databases so repeat runs skip posts that were
+already saved.
 
 ## Features
 
 - Trigger downloads from Discord with `/ig_download`, `!download`, or a numeric
-  direct message to the bot owner account.
+  direct message to the bot owner account. Supports batch processing of multiple
+  accounts in sequence.
 - Limit a session with `/ig_download max_posts:10`, `!download 10`, or a DM
   containing only a positive integer.
 - Send owner direct messages when the bot comes online or shuts down cleanly.
 - Show live progress by editing the initial Discord status message.
-- Write Discord bot runtime logs to both the console and `discord_bot.log`.
+- Write Discord bot runtime logs to both the console and timestamped files under
+  `logs/`, keeping only recent runs.
 - Prevent overlapping sessions with an async download lock and a local
   single-instance socket lock.
-- Authenticate with an Instaloader session file, Instagram credentials, 2FA, or
-  Firefox cookies as a fallback.
-- Track downloaded post shortcodes in `download_history.db` with idempotent
-  `INSERT OR IGNORE` writes.
+- Authenticate by reusing an active Firefox Instagram session cookie database.
+- Track downloaded post shortcodes in `download_history_<account>.db` with
+  idempotent `INSERT OR IGNORE` writes.
 - Prune stale history entries when posts are no longer in saved posts.
 - Return a session report to Discord, truncated safely for Discord's message
   limit.
@@ -66,7 +68,8 @@ Make sure you have Python installed. Open your computer's terminal or command
 prompt in this folder and run:
 
 ```bash
-pip install discord.py instaloader
+pip install discord.py playwright playwright-stealth
+playwright install chromium
 ```
 
 ### 5. Configuration (`settings.ini`)
@@ -79,11 +82,14 @@ details:
 [Discord]
 discord_bot_token = YOUR_DISCORD_BOT_TOKEN
 allowed_user_id = YOUR_DISCORD_USER_ID
-
 [Credentials]
-ig_name = your_instagram_username
-ig_pw = your_instagram_password
+ig_name = first_username, second_username
 ```
+
+The downloader uses your active Firefox Instagram session for authentication.
+Log into Instagram in Firefox as the account you want to download before running
+the bot. For multiple configured usernames, switch the active Firefox session to
+the account being processed.
 
 ### 6. Run the Bot
 
@@ -95,7 +101,7 @@ python discord_bot.py
 
 If you see log messages saying "Logged in as..." and
 "Ready to receive commands!", you are good to go. The same startup and error
-logs are also written to `discord_bot.log` for troubleshooting.
+logs are also written to timestamped files under `logs/` for troubleshooting.
 
 On Windows, you can also use:
 
@@ -114,9 +120,9 @@ Now that the bot is running and in your server:
 - Send the bot a direct message containing only a number, such as `10`, to run
   a limited session from DMs.
 
-The first time you run this, you may be prompted in your terminal for a 2FA code
-if your Instagram account uses two-factor authentication. Check your terminal
-output if the bot seems stuck.
+If the bot reports that no Firefox session was found or that the account does
+not match, log into the requested Instagram account in Firefox and run the
+command again.
 
 ## Command-Line Usage
 
@@ -126,10 +132,9 @@ Run the downloader directly without Discord:
 python instaloader_downloader.py
 ```
 
-Downloaded media is written to a folder named after the configured Instagram
-account. Local runtime state such as `settings.ini`, `download_history.db`,
-`discord_bot.log`, media folders, Instaloader session artifacts, and Python
-caches are intentionally ignored by Git.
+Downloaded media is written under `downloads/`. Local runtime state such as
+`settings.ini`, `download_history_<account>.db`, `logs/`, media files, browser
+session artifacts, and Python caches are intentionally ignored by Git.
 
 ## Project Layout
 
