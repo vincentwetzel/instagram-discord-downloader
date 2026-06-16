@@ -7,10 +7,9 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 ### Added
-- Playwright-based saved-post downloader that reuses active Firefox Instagram
-  cookies for browser-authenticated downloads.
-- Account-specific history databases named `download_history_<account>.db`.
-- Support for comma-separated Instagram usernames in `settings.ini`.
+- Added support for a custom `base_download_path` under a `[Storage]` section
+  in `settings.ini`, including dynamic `{account_name}` and `{username}` folder
+  mapping.
 - Discord bot runtime logging to both standard output and timestamped files
   under `logs/`, including uncaught exception logging.
 - Direct Message (DM) notifications sent to the bot owner when the bot goes
@@ -26,16 +25,11 @@ and this project adheres to Semantic Versioning.
   initial status message.
 
 ### Changed
-- Reworked the downloader engine from the legacy Instaloader flow to
-  Playwright browser automation.
-- Store downloaded media under `downloads/` with owner and UTC timestamp details
-  in generated filenames.
-- Rotate Discord bot logs as timestamped files under `logs/`.
 - Replaced Discord bot startup and error `print()` calls with structured logger
   calls.
 - Updated Discord configuration to use `discord_bot_token` and `allowed_user_id`.
 - Improved download reports with archive size and remaining-download counters.
-- Removed the obsolete Instaloader version-check module.
+- Renamed downloaded media files to include the source post owner and UTC timestamp.
 - Enforced strict Google-style docstrings across Discord command handlers in
   `discord_bot.py`.
 - Bubble up critical authentication exceptions during individual post downloads

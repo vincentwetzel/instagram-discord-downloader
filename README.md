@@ -82,14 +82,23 @@ details:
 [Discord]
 discord_bot_token = YOUR_DISCORD_BOT_TOKEN
 allowed_user_id = YOUR_DISCORD_USER_ID
+
 [Credentials]
 ig_name = first_username, second_username
+
+[Storage]
+base_download_path = downloads/{account_name}
 ```
 
 The downloader uses your active Firefox Instagram session for authentication.
 Log into Instagram in Firefox as the account you want to download before running
 the bot. For multiple configured usernames, switch the active Firefox session to
 the account being processed.
+
+The `[Storage]` section is optional. If `base_download_path` is omitted, media is
+saved to `downloads/<account_name>/`. When provided, `{account_name}` or
+`{username}` placeholders are replaced with the Instagram account currently being
+processed.
 
 ### 6. Run the Bot
 
@@ -132,7 +141,8 @@ Run the downloader directly without Discord:
 python instaloader_downloader.py
 ```
 
-Downloaded media is written under `downloads/`. Local runtime state such as
+Downloaded media is written under the configured `[Storage]` path, or under
+`downloads/` when no custom path is configured. Local runtime state such as
 `settings.ini`, `download_history_<account>.db`, `logs/`, media files, browser
 session artifacts, and Python caches are intentionally ignored by Git.
 

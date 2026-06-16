@@ -52,15 +52,20 @@ stays responsive.
    - Generates a textual report of the download session.
 
 3. **Configuration (`settings.ini`)**
-   - Stores the Discord bot token, allowed Discord user ID, and Instagram
-     credentials.
+   - Stores the Discord bot token, allowed Discord user ID, Instagram
+     credentials, and optional storage path template.
+   - Uses `[Storage].base_download_path` when configured. The downloader
+     replaces `{account_name}` or `{username}` with the account currently being
+     processed, falling back to `downloads/<account_name>/` when the setting is
+     omitted.
    - Lives outside version control because it contains local secrets.
 
 4. **Runtime State**
    - `download_history_<account>.db` stores downloaded post shortcodes.
    - `logs/discord_bot_<timestamp>.log` stores local bot startup, shutdown, and
      error logs. Older run logs are pruned automatically.
-   - `downloads/` stores downloaded media.
+   - `downloads/` stores downloaded media unless `[Storage].base_download_path`
+     points media at another local directory.
 
 5. **Windows Bot Helpers (`start_bot.bat`, `stop_bot.bat`)**
    - `start_bot.bat` launches `discord_bot.py` in the background with
@@ -73,8 +78,8 @@ stays responsive.
 - `downloader.auth`: Session loading helpers and Firefox cookie import.
 - `downloader.config`: `settings.ini` parsing and typed config object.
 - `downloader.downloads`: Saved-post retrieval, duplicate filtering, downloads,
-  owner/timestamp-based filenames, per-post error capture, and rate-limit
-  friendly delays.
+  configurable storage paths, owner/timestamp-based filenames, per-post error
+  capture, and rate-limit friendly delays.
 - `downloader.history`: SQLite schema setup, shortcode reads/writes, and stale
   history pruning.
 - `downloader.logging_utils`: Timestamped console logging helpers and optional

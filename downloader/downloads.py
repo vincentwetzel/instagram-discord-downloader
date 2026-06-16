@@ -1,5 +1,6 @@
 """Saved-post download workflow."""
 
+import configparser
 import logging
 import os
 import random
@@ -688,8 +689,19 @@ def try_download_post(
         if not timestamp_str:
             timestamp_str = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Save asset
-        output_dir = Path("downloads") / account_name
+        # Load storage configuration from settings.ini
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(Path("settings.ini"))
+        base_path_template = config.get("Storage", "base_download_path", fallback=None)
+
+        if base_path_template:
+            interpolated_path = base_path_template
+            for placeholder in ["{account_name}", "{username}"]:
+                interpolated_path = interpolated_path.replace(placeholder, account_name)
+            output_dir = Path(interpolated_path)
+        else:
+            output_dir = Path("downloads") / account_name
+
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for idx, item in enumerate(media_items):
