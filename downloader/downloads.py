@@ -536,12 +536,12 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
                     m = re.search(r'\((@[a-zA-Z0-9._\-]+)\)\s+(?:on\s+Instagram|•\s+Instagram)', content, re.IGNORECASE)
                     if m:
                         title_meta_candidates.append(m.group(1).replace("@", "").lower())
-                    
+
                     # Match strict post owner signature from metadata block (e.g. "- arvidhestner on April 7, 2022")
                     m = re.search(r'-\s*([a-zA-Z0-9._\-]+)\s+on\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}', content)
                     if m:
                         title_meta_candidates.append(m.group(1).lower())
-                    
+
                     # Relegate general description mentions to Priority 5 fallbacks
                     m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
                     if m:
@@ -969,13 +969,21 @@ def try_download_post(
                         media_url = captured_video_urls[video_counter]
                         logger.info(f"Resolved blob to captured URL: {media_url}")
                     elif captured_video_urls:
-                        media_url = captured_video_urls[-1]
-                        logger.info(f"Resolved blob to last captured URL: {media_url}")
-                    else:
+                        # Try to find a captured video URL that hasn't been used yet
+                        unused_captured = [u for u in captured_video_urls if not any(item["url"] == u for item in media_items_data)]
+                        if unused_captured:
+                            media_url = unused_captured[0]
+                            logger.info(f"Resolved blob to unused captured URL: {media_url}")
+                        else:
+                            logger.info("All captured video URLs already used. Proceeding to other fallbacks.")
+
+                    if not media_url or media_url.startswith("blob:"):
                         meta_video = page.query_selector("meta[property='og:video']")
                         if meta_video:
-                            media_url = meta_video.get_attribute("content")
-                            logger.info(f"Resolved blob to meta property og:video: {media_url}")
+                            candidate_meta = meta_video.get_attribute("content")
+                            if candidate_meta and not any(item["url"] == candidate_meta for item in media_items_data):
+                                media_url = candidate_meta
+                                logger.info(f"Resolved blob to meta property og:video: {media_url}")
                         
                         # Fallback: Parse progressive mp4 CDN streams directly from hydrated page metadata
                         if not media_url or media_url.startswith("blob:"):
@@ -989,12 +997,25 @@ def try_download_post(
                                     decoded_content
                                 )
                                 if mp4_matches:
-                                    # Strip trailing XML tags, HTML entities, quotes, or whitespace captured by the wildcard
-                                    raw_match = mp4_matches[0]
-                                    cleaned_match = re.split(r'(?:&lt;|&gt;|<|>|\\u|\\n|\\t|")', raw_match)[0]
-                                    # Unescape HTML entities like &amp; to &
-                                    media_url = html.unescape(cleaned_match)
-                                    logger.info(f"Resolved blob to parsed HTML match: {media_url}")
+                                    # Deduplicate matches while preserving order
+                                    seen_matches = []
+                                    for match in mp4_matches:
+                                        cleaned = re.split(r'(?:&lt;|&gt;|<|>|\\u|\\n|\\t|")', match)[0]
+                                        unescaped = html.unescape(cleaned)
+                                        if unescaped not in seen_matches:
+                                            seen_matches.append(unescaped)
+
+                                    # Find the first unused mp4 match
+                                    unused_matches = [m for m in seen_matches if not any(item["url"] == m for item in media_items_data)]
+                                    if unused_matches:
+                                        media_url = unused_matches[0]
+                                        logger.info(f"Resolved blob to parsed HTML match (unused): {media_url}")
+                                    elif len(seen_matches) > video_counter:
+                                        media_url = seen_matches[video_counter]
+                                        logger.info(f"Resolved blob to parsed HTML match at index {video_counter}: {media_url}")
+                                    else:
+                                        media_url = seen_matches[0]
+                                        logger.info(f"Resolved blob to first parsed HTML match fallback: {media_url}")
                             except Exception as parse_exc:
                                 logger.warning(f"Failed to parse progressive mp4 from page content: {parse_exc}")
                         

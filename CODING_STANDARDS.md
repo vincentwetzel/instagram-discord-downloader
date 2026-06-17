@@ -25,7 +25,8 @@ and application stability.
 - **Path Management:** Prefer the modern `pathlib` module for file and
   directory path manipulations over string concatenation or `os.path`.
 - **Imports:** Group imports logically: standard library first, followed by
-  third-party libraries such as `discord` and `instaloader`, then local imports.
+  third-party libraries such as `discord`, `playwright`, and
+  `playwright_stealth`, then local imports.
 - **Soft Line Length:** Prefer keeping code lines reasonably short, around 88
   characters where practical, to preserve coding-agent context and improve
   review readability. Treat this as a soft rule: clarity and stable formatting
@@ -38,8 +39,8 @@ and application stability.
   I/O, network streams, and locks to guarantee proper cleanup of resources
   even when exceptions occur.
 - **Exception Handling:** Avoid bare `except:` clauses. Always catch specific
-  exceptions (e.g., `instaloader.exceptions.InstaloaderException`) or at
-  minimum `Exception` to avoid swallowing system-level exits.
+  exceptions (for example, Playwright or SQLite exceptions) or at minimum
+  `Exception` to avoid swallowing system-level exits.
 
 ## 2. Architecture & Concurrency Constraints
 

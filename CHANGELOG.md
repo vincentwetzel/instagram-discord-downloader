@@ -32,6 +32,9 @@ and this project adheres to Semantic Versioning.
 ### Changed
 - Replaced Discord bot startup and error `print()` calls with structured logger
   calls.
+- Improved carousel video fallback selection by preferring unused captured
+  streams, `og:video` metadata, and parsed page-source MP4 URLs before reusing a
+  previously selected stream.
 - Improved original post owner extraction for filenames by checking page-source
   state JSON, stricter title metadata, strict description signatures, and the
   first valid profile link in the post article before loose DOM fallbacks.
