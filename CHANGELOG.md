@@ -32,6 +32,9 @@ and this project adheres to Semantic Versioning.
 ### Changed
 - Replaced Discord bot startup and error `print()` calls with structured logger
   calls.
+- Improved original post owner extraction for filenames by checking page-source
+  state JSON, stricter title metadata, strict description signatures, and the
+  first valid profile link in the post article before loose DOM fallbacks.
 - Updated Discord configuration to use `discord_bot_token` and `allowed_user_id`.
 - Improved download reports with archive size and remaining-download counters.
 - Renamed downloaded media files to include the source post owner and UTC timestamp.
@@ -57,6 +60,8 @@ and this project adheres to Semantic Versioning.
   interaction webhook token expires by switching to normal message edits.
 - Reduced failed carousel media downloads caused by blob URLs, CDN query
   mismatches, delayed media source population, and Instagram reel URL variants.
+- Avoided selecting media from Instagram recommendation grids when detecting the
+  active post image or video.
 
 ## [1.0.0] - Initial Implementation
 ### Added

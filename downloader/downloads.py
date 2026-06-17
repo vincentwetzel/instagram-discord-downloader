@@ -452,11 +452,11 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
         logger.debug(f"Failed to parse username from URL: {e}")
 
     json_candidates = []
-    meta_candidates = []
+    title_meta_candidates = [] # For high-confidence meta tags (titles)
     dom_confident_candidates = []
     fallback_candidates = []
 
-    # Priority 2: JSON-LD metadata (highest confidence, 100% author-specific)
+    # Priority 2: JSON-LD & Page Source JSON state metadata (highest confidence, 100% author-specific)
     try:
         scripts = page.query_selector_all("script[type='application/ld+json']")
         for script in scripts:
@@ -478,8 +478,21 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
     except Exception:
         pass
 
-    # Priority 3: Meta tags (og:description, description, og:title, twitter:title) - 100% author-specific
-    for selector in ["meta[property='og:description']", "meta[name='description']", "meta[property='og:title']", "meta[name='twitter:title']"]:
+    # Parse raw page HTML source for hydrated state JSON patterns (extremely robust fallback)
+    try:
+        html_content = page.content()
+        owner_matches = re.findall(r'"owner"\s*:\s*\{[^}]*?"username"\s*:\s*"([a-zA-Z0-9._\-]+)"', html_content)
+        for m in owner_matches:
+            json_candidates.append(m.lower())
+        author_matches = re.findall(r'"author"\s*:\s*\{[^}]*?"username"\s*:\s*"([a-zA-Z0-9._\-]+)"', html_content)
+        for m in author_matches:
+            json_candidates.append(m.lower())
+    except Exception as e:
+        logger.debug(f"Failed to parse raw HTML JSON state: {e}")
+
+    # Priority 3: Strict Meta Titles (og:title, twitter:title, page.title()) - highly reliable for author
+    # Check titles first as they are highly reliable for the main author
+    for selector in ["meta[property='og:title']", "meta[name='twitter:title']"]:
         try:
             elem = page.query_selector(selector)
             if elem:
@@ -487,10 +500,13 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
                 if content:
                     m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
                     if m:
-                        meta_candidates.append(m.group(1).lower())
-                    m = re.search(r'@([a-zA-Z0-9._\-]+)', content)
+                        title_meta_candidates.append(m.group(1).lower())
+                    m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+on\s+Instagram', content, re.IGNORECASE)
                     if m:
-                        meta_candidates.append(m.group(1).lower())
+                        title_meta_candidates.append(m.group(1).lower())
+                    m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+•\s+Instagram', content, re.IGNORECASE)
+                    if m:
+                        title_meta_candidates.append(m.group(1).lower())
         except Exception:
             pass
 
@@ -499,12 +515,42 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
         if title_val:
             m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', title_val)
             if m:
-                meta_candidates.append(m.group(1).lower())
-            m = re.search(r'^([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
+                title_meta_candidates.append(m.group(1).lower())
+            m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
             if m:
-                meta_candidates.append(m.group(1).lower())
+                title_meta_candidates.append(m.group(1).lower())
+            m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+•\s+Instagram', title_val, re.IGNORECASE)
+            if m:
+                title_meta_candidates.append(m.group(1).lower())
     except Exception:
         pass
+
+    # Priority 3 (Strict Author Prefix from descriptions) & Priority 5 (Loose Meta Descriptions)
+    for selector in ["meta[property='og:description']", "meta[name='description']"]:
+        try:
+            elem = page.query_selector(selector)
+            if elem:
+                content = elem.get_attribute("content")
+                if content:
+                    # Match strict parenthesized author handle prefix (e.g. "Name (@username) on Instagram:")
+                    m = re.search(r'\((@[a-zA-Z0-9._\-]+)\)\s+(?:on\s+Instagram|•\s+Instagram)', content, re.IGNORECASE)
+                    if m:
+                        title_meta_candidates.append(m.group(1).replace("@", "").lower())
+                    
+                    # Match strict post owner signature from metadata block (e.g. "- arvidhestner on April 7, 2022")
+                    m = re.search(r'-\s*([a-zA-Z0-9._\-]+)\s+on\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}', content)
+                    if m:
+                        title_meta_candidates.append(m.group(1).lower())
+                    
+                    # Relegate general description mentions to Priority 5 fallbacks
+                    m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
+                    if m:
+                        fallback_candidates.append(m.group(1).lower())
+                    m = re.search(r'@([a-zA-Z0-9._\-]+)', content)
+                    if m:
+                        fallback_candidates.append(m.group(1).lower())
+        except Exception:
+            pass
 
     # Priority 4: Semantic header and h2 elements (poster's username is in h2 or header)
     main_elem = page.query_selector("main, [role='main']") or page
@@ -542,6 +588,41 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
     except Exception:
         pass
 
+    # Priority 4 Fallback: Extract the absolute first valid profile link inside `<article>`.
+    # On Instagram post pages, the top-left post header contains the poster's profile picture and link.
+    # This is guaranteed to be the first standard link inside `<article>`.
+    try:
+        article = page.query_selector("article")
+        if article:
+            links = article.query_selector_all("a[href]")
+            seen_candidates = []
+            for link in links:
+                href = link.get_attribute("href")
+                if href:
+                    cleaned = href.strip("/")
+                    if (
+                        cleaned 
+                        and "/" not in cleaned 
+                        and cleaned not in ["explore", "reels", "direct", "stories", "emails", "locations"]
+                        and re.match(r"^[a-zA-Z0-9._\-]+$", cleaned)
+                    ):
+                        try:
+                            is_tag_overlay = page.evaluate(
+                                "(el) => { return !!el.closest('div._aagw, div._aagv, div[role=\"presentation\"]'); }",
+                                link
+                            )
+                            if is_tag_overlay:
+                                continue
+                        except Exception:
+                            pass
+                        
+                        if cleaned.lower() not in seen_candidates:
+                            seen_candidates.append(cleaned.lower())
+            if seen_candidates:
+                dom_confident_candidates.append(seen_candidates[0])
+    except Exception as e:
+        logger.debug(f"Failed to extract first article link: {e}")
+
     # Priority 5: Generic DOM links (fallback last resort, might contain tagged/commented users)
     try:
         links = main_elem.query_selector_all("a[href]")
@@ -578,9 +659,9 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
             logger.debug(f"Extracted original post owner '{c}' via Priority 2 (JSON-LD)")
             return c
 
-    for c in meta_candidates:
+    for c in title_meta_candidates: # New evaluation point for strict meta titles
         if c != logged_in_user:
-            logger.debug(f"Extracted original post owner '{c}' via Priority 3 (Meta Tags)")
+            logger.debug(f"Extracted original post owner '{c}' via Priority 3 (Strict Meta Titles)")
             return c
 
     for c in dom_confident_candidates:
@@ -588,17 +669,17 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
             logger.debug(f"Extracted original post owner '{c}' via Priority 4 (DOM semantic elements)")
             return c
 
-    for c in fallback_candidates:
+    for c in fallback_candidates: # Now includes all description meta tags and generic DOM links
         if c != logged_in_user:
-            logger.debug(f"Extracted original post owner '{c}' via Priority 5 (DOM general links)")
+            logger.debug(f"Extracted original post owner '{c}' via Priority 5 (Loose Meta Descriptions / DOM general links)")
             return c
 
     # Final fallbacks if everything else is logged_in_user or empty
     for group, label in [
-        (json_candidates, "JSON-LD"),
-        (meta_candidates, "Meta Tags"),
+        (json_candidates, "JSON-LD"), # Priority 2
+        (title_meta_candidates, "Strict Meta Titles"), # Priority 3
         (dom_confident_candidates, "DOM semantic elements"),
-        (fallback_candidates, "DOM general links")
+        (fallback_candidates, "Loose Meta Descriptions / DOM general links") # Priority 5
     ]:
         if group:
             logger.debug(f"Extracted original post owner '{group[0]}' via final fallback for {label}")
@@ -650,6 +731,16 @@ def _find_active_media_element(page: Page) -> tuple[Optional[Any], Optional[str]
             if v.is_visible():
                 box = v.bounding_box()
                 if box and box["width"] > 0 and _is_element_horizontally_centered(box, scope_box):
+                    # Exclude videos that are inside suggestion links (e.g. recommendation grid)
+                    try:
+                        is_suggestion = page.evaluate(
+                            "(el) => { return !!el.closest('a[href*=\"/p/\"], a[href*=\"/reel/\"], a[href*=\"/reels/\"]'); }",
+                            v
+                        )
+                        if is_suggestion:
+                            continue
+                    except Exception:
+                        pass
                     candidate_videos.append((v, box))
     except Exception as e:
         logger.debug(f"Error querying videos: {e}")
@@ -661,6 +752,16 @@ def _find_active_media_element(page: Page) -> tuple[Optional[Any], Optional[str]
             if img.is_visible():
                 box = img.bounding_box()
                 if box and box["width"] > 200 and _is_element_horizontally_centered(box, scope_box):
+                    # Exclude images that are inside suggestion links (e.g. recommendation grid)
+                    try:
+                        is_suggestion = page.evaluate(
+                            "(el) => { return !!el.closest('a[href*=\"/p/\"], a[href*=\"/reel/\"], a[href*=\"/reels/\"]'); }",
+                            img
+                        )
+                        if is_suggestion:
+                            continue
+                    except Exception:
+                        pass
                     candidate_images.append((img, box))
     except Exception as e:
         logger.debug(f"Error querying images: {e}")

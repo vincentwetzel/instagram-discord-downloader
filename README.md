@@ -25,6 +25,8 @@ already saved.
 - Download post and carousel media through layered Playwright retrieval
   strategies for CDN responses, blob videos, canvas-readable images, in-page
   fetches, and screenshot fallback for images.
+- Name files from the original post owner and post timestamp when Instagram
+  exposes them, using page metadata and DOM fallbacks when needed.
 - Track downloaded post shortcodes in `download_history_<account>.db` with
   idempotent `INSERT OR IGNORE` writes.
 - Prune stale history entries when posts are no longer in saved posts.
@@ -162,7 +164,7 @@ session artifacts, and Python caches are intentionally ignored by Git.
 - `instaloader_downloader.py`: Compatibility entry point for CLI use and older
   imports.
 - `downloader/`: Focused modules for auth, configuration, downloads, history,
-  reporting, timing, logging, and Instaloader version checks.
+  reporting, timing, logging, owner metadata extraction, and media capture.
 - `start_bot.bat` / `stop_bot.bat`: Windows helpers for background bot
   management.
 - `ARCHITECTURE.md`: Component and data-flow overview.

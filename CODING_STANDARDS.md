@@ -31,9 +31,9 @@ and application stability.
   review readability. Treat this as a soft rule: clarity and stable formatting
   are more important than awkward wrapping.
 - **Logging:** Use `downloader.logging_utils.log()` for console output within
-  the downloader package to ensure consistent, timestamped logging. Use standard
-  `print()` only in top-level entry points (`discord_bot.py`) for basic startup
-  messages.
+  the downloader package to ensure consistent, timestamped logging. Use the
+  configured `discord_bot.py` logger for bot startup, shutdown, and error
+  messages so console and file logs stay consistent.
 - **Resource Management:** Prefer context managers (`with` statements) for file
   I/O, network streams, and locks to guarantee proper cleanup of resources
   even when exceptions occur.

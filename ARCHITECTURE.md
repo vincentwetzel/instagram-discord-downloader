@@ -52,6 +52,11 @@ stays responsive.
    - Downloads post and carousel media through Playwright using captured
      network responses, blob-video stream resolution, in-page fetches, context
      requests, canvas extraction, and image screenshot fallback.
+   - Derives output filenames from the original post owner and post timestamp,
+     using URL parsing, JSON metadata, page-source state, strict title metadata,
+     article header links, and DOM fallbacks.
+   - Filters active media candidates to avoid downloading recommendation-grid
+     media that can appear near the opened post.
    - Uses account-specific SQLite databases (`download_history_<account>.db`) to
      track downloaded shortcodes and prevent duplicates.
    - Prunes downloaded-post history for shortcodes that are no longer in the
@@ -86,8 +91,8 @@ stays responsive.
 - `downloader.config`: `settings.ini` parsing and typed config object.
 - `downloader.downloads`: Saved-post retrieval, Firefox cookie-jar selection,
   duplicate filtering, carousel traversal, layered media downloads,
-  configurable storage paths, owner/timestamp-based filenames, per-post error
-  capture, and rate-limit friendly delays.
+  configurable storage paths, owner/timestamp-based filenames, recommendation
+  media filtering, per-post error capture, and rate-limit friendly delays.
 - `downloader.history`: SQLite schema setup, shortcode reads/writes, and stale
   history pruning.
 - `downloader.logging_utils`: Timestamped console logging helpers and optional
@@ -110,8 +115,10 @@ stays responsive.
 4. Downloader queries Instagram for saved posts and reels, then compares
    shortcodes against the account-specific history database.
 5. Stale shortcode rows for unsaved posts are pruned from history.
-6. New posts are opened individually; active media is captured from the DOM,
-   network responses, and fallback retrieval tiers before being written locally.
+6. New posts are opened individually; active media is selected from the opened
+   post, excluding recommendation-grid candidates, then captured from the DOM,
+   network responses, and fallback retrieval tiers before being written locally
+   with owner/timestamp-based filenames.
 7. Successful downloads are recorded with `INSERT OR IGNORE`.
 8. Downloader log messages are forwarded to Discord as live status-message
    edits while the session runs.
