@@ -32,9 +32,10 @@ and this project adheres to Semantic Versioning.
 ### Changed
 - Replaced Discord bot startup and error `print()` calls with structured logger
   calls.
-- Improved carousel video fallback selection by preferring unused captured
-  streams, `og:video` metadata, and parsed page-source MP4 URLs before reusing a
-  previously selected stream.
+- Improved carousel video fallback selection by grouping stream candidates by
+  video asset ID, preferring progressive MP4 streams from JSON metadata,
+  `og:video`, page-source HTML, and embed pages, then falling back to captured
+  playback streams only when needed.
 - Improved original post owner extraction for filenames by checking page-source
   state JSON, stricter title metadata, strict description signatures, and the
   first valid profile link in the post article before loose DOM fallbacks.
@@ -61,8 +62,9 @@ and this project adheres to Semantic Versioning.
   (explicit conversion of cookies to `dict`).
 - Preserved live Discord progress updates during longer sessions when the
   interaction webhook token expires by switching to normal message edits.
-- Reduced failed carousel media downloads caused by blob URLs, CDN query
-  mismatches, delayed media source population, and Instagram reel URL variants.
+- Reduced failed or silent carousel video downloads caused by blob URLs, DASH
+  video-only streams, CDN query mismatches, delayed media source population, and
+  Instagram reel URL variants.
 - Avoided selecting media from Instagram recommendation grids when detecting the
   active post image or video.
 

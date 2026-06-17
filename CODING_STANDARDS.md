@@ -55,6 +55,11 @@ and application stability.
   workflow logic in `downloader.downloads`, SQLite logic in
   `downloader.history`, report formatting in `downloader.reporting`, and
   Discord-specific behavior in `discord_bot.py`.
+- **Media Retrieval:** Keep Instagram media fallback logic layered and
+  observable. Blob-video handling should prefer progressive audio-included MP4
+  sources before DASH or captured playback fallbacks, and carousel stream
+  deduplication should compare stable asset identifiers rather than raw CDN
+  URLs alone.
 
 ## 3. Database Guidelines
 

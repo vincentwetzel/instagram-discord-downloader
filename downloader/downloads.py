@@ -2,7 +2,6 @@
 
 import html
 import json
-import json
 import base64
 import configparser
 import logging
@@ -429,6 +428,145 @@ def _find_next_button(page: Page, active_elem: Optional[Any] = None) -> Optional
     return None
 
 
+def _extract_video_asset_id(url: str) -> Optional[str]:
+    """Extract a unique video asset identifier from an Instagram CDN video URL."""
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        for key in ["xpv_asset_id", "asset_id", "video_id"]:
+            if key in query_params:
+                return query_params[key][0]
+        
+        if "efg" in query_params:
+            efg_val = query_params["efg"][0]
+            padded = efg_val + "=" * ((4 - len(efg_val) % 4) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+            efg_data = json.loads(decoded)
+            for key in ["xpv_asset_id", "asset_id", "video_id"]:
+                if key in efg_data and efg_data[key]:
+                    return str(efg_data[key])
+    except Exception:
+        pass
+    
+    match = re.search(r'xpv_asset_id["\']?\s*[:=]\s*["\']?(\d+)', url)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
+def _is_progressive_url(url: str) -> bool:
+    """Check if a URL is a progressive (audio-included) stream or a silent DASH stream."""
+    import urllib.parse
+    import base64
+    import json
+    
+    logger.info(f"[Diagnostic] Evaluating progressive URL candidate: {url[:120]}...")
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path_lower = parsed.path.lower()
+        
+        # Check path only for chunk indicators (excluding the base64 query efg payload)
+        for chunk in [".m4s", "seg-", "fragment", "chunk"]:
+            if chunk in path_lower:
+                logger.info(f"[Diagnostic] Classified non-progressive: chunk indicator '{chunk}' found in path: {path_lower}")
+                return False
+                
+        query_params = urllib.parse.parse_qs(parsed.query)
+        if "bytestart" in query_params or "byteend" in query_params:
+            logger.info(f"[Diagnostic] Classified non-progressive: byte-range indicators found in query.")
+            return False
+            
+        if "efg" in query_params:
+            efg_val = query_params["efg"][0]
+            padded = efg_val + "=" * ((4 - len(efg_val) % 4) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+            efg_data = json.loads(decoded)
+            
+            vencode_tag = efg_data.get("vencode_tag", "")
+            logger.info(f"[Diagnostic] Decoded efg parameters: {json.dumps(efg_data)} | vencode_tag = '{vencode_tag}'")
+            
+            # Explicitly check for progressive metadata tags (Override standard DASH blocks)
+            if "progressive" in vencode_tag.lower():
+                logger.info(f"[Diagnostic] Classified progressive: vencode_tag explicitly contains 'progressive' (override).")
+                return True
+                
+            if "dash" in vencode_tag.lower():
+                logger.info(f"[Diagnostic] Classified non-progressive: vencode_tag contains 'dash'.")
+                return False
+    except Exception as e:
+        logger.warning(f"[Diagnostic] Error evaluating progressive URL: {e}")
+        
+    logger.info(f"[Diagnostic] Classified progressive: Default fallback validation passed.")
+    return True
+
+
+def _extract_unique_best_video_urls(mp4_urls: list[str]) -> list[str]:
+    """Group MP4 URLs by their unique asset ID and return the best quality URL for each distinct asset."""
+    import urllib.parse
+    asset_groups = {}  # asset_id -> list of (url, score)
+    first_seen_indices = {}
+    
+    for idx, url in enumerate(mp4_urls):
+        asset_id = _extract_video_asset_id(url)
+        if not asset_id:
+            try:
+                asset_id = url.split("?")[0].split("/")[-1]
+            except Exception:
+                asset_id = url
+                
+        if asset_id not in first_seen_indices:
+            first_seen_indices[asset_id] = idx
+            
+        score = 0
+        is_progressive = _is_progressive_url(url)
+        logger.info(f"[Diagnostic] Scorer Raw - Asset ID Candidate: {asset_id} | URL: {url[:100]}...")
+            
+        try:
+            # Dynamically parse standard horizontal/vertical resolution numbers from the URL path or metadata
+            res_match = re.search(r'(1080|720|640|576|480|360|240)', url)
+            if res_match:
+                score = int(res_match.group(1))
+                logger.info(f"[Diagnostic] Scorer Resolution Match: Found height {score}p inside candidate URL.")
+            
+            parsed = urllib.parse.urlparse(url)
+            query_params = urllib.parse.parse_qs(parsed.query)
+            if "efg" in query_params:
+                efg_val = query_params["efg"][0]
+                padded = efg_val + "=" * ((4 - len(efg_val) % 4) % 4)
+                decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+                efg_data = json.loads(decoded)
+                    
+                bitrate = efg_data.get("bitrate", 0)
+                if bitrate:
+                    score += bitrate / 1000000.0
+        except Exception:
+            pass
+            
+        # Elevate progressive (audio-included) streams above silent DASH streams
+        if is_progressive:
+            score += 100000
+            
+        logger.info(f"[Diagnostic] Scorer Evaluated - Asset ID: {asset_id} | Is Progressive: {is_progressive} | Score: {score}")
+            
+        if asset_id not in asset_groups:
+            asset_groups[asset_id] = []
+        asset_groups[asset_id].append((url, score))
+        
+    sorted_asset_ids = sorted(asset_groups.keys(), key=lambda aid: first_seen_indices[aid])
+    best_urls = []
+    for asset_id in sorted_asset_ids:
+        candidates = asset_groups[asset_id]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_url = candidates[0][0]
+        best_score = candidates[0][1]
+        logger.info(f"[Diagnostic] Scorer Group Best Selected - Asset ID: {asset_id} | Score: {best_score} | Chosen URL: {best_url[:100]}...")
+        best_urls.append(candidates[0][0])
+        
+    return best_urls
+
+
 def _extract_owner_username(page: Page, fallback_account: str) -> str:
     """Extract the original post owner's username using robust page-meta and DOM fallback strategies.
 
@@ -501,12 +639,19 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
                     m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', content)
                     if m:
                         title_meta_candidates.append(m.group(1).lower())
-                    m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+on\s+Instagram', content, re.IGNORECASE)
+                    m = re.search(r'^@([a-zA-Z0-9._\-]+)\s+on\s+Instagram', content, re.IGNORECASE)
                     if m:
                         title_meta_candidates.append(m.group(1).lower())
-                    m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+•\s+Instagram', content, re.IGNORECASE)
+                    m = re.search(r'^@([a-zA-Z0-9._\-]+)\s+•\s+Instagram', content, re.IGNORECASE)
                     if m:
                         title_meta_candidates.append(m.group(1).lower())
+                    # No @ prefix: less reliable, relegate to fallback_candidates
+                    m = re.search(r'^([a-zA-Z0-9._\-]+)\s+on\s+Instagram', content, re.IGNORECASE)
+                    if m:
+                        fallback_candidates.append(m.group(1).lower())
+                    m = re.search(r'^([a-zA-Z0-9._\-]+)\s+•\s+Instagram', content, re.IGNORECASE)
+                    if m:
+                        fallback_candidates.append(m.group(1).lower())
         except Exception:
             pass
 
@@ -516,12 +661,19 @@ def _extract_owner_username(page: Page, fallback_account: str) -> str:
             m = re.search(r'\(@([a-zA-Z0-9._\-]+)\)', title_val)
             if m:
                 title_meta_candidates.append(m.group(1).lower())
-            m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
+            m = re.search(r'^@([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
             if m:
                 title_meta_candidates.append(m.group(1).lower())
-            m = re.search(r'^@?([a-zA-Z0-9._\-]+)\s+•\s+Instagram', title_val, re.IGNORECASE)
+            m = re.search(r'^@([a-zA-Z0-9._\-]+)\s+•\s+Instagram', title_val, re.IGNORECASE)
             if m:
                 title_meta_candidates.append(m.group(1).lower())
+            # No @ prefix: less reliable, relegate to fallback_candidates
+            m = re.search(r'^([a-zA-Z0-9._\-]+)\s+on\s+Instagram', title_val, re.IGNORECASE)
+            if m:
+                fallback_candidates.append(m.group(1).lower())
+            m = re.search(r'^([a-zA-Z0-9._\-]+)\s+•\s+Instagram', title_val, re.IGNORECASE)
+            if m:
+                fallback_candidates.append(m.group(1).lower())
     except Exception:
         pass
 
@@ -944,85 +1096,316 @@ def try_download_post(
 
             if video_elem:
                 if media_url and media_url.startswith("blob:"):
-                    logger.info("Muted blob URL detected, triggering video playback to capture streaming assets...")
-                    # Force video elements to play (muted) to trigger browser streaming requests
-                    try:
-                        page.evaluate("(v) => { if (v) { v.muted = true; v.play().catch(() => {}); } }", video_elem)
-                        # Give some time for network requests to fire and be captured
-                        page.wait_for_timeout(1000) # Initial wait
-                        
-                        # Poll captured_video_urls for up to 5 seconds
-                        start_time = time.time()
-                        while (len(captured_video_urls) <= video_counter) and (time.time() - start_time < 5):
-                            page.wait_for_timeout(200) # Poll every 200ms
-                        
-                        if not captured_video_urls:
-                            logger.warning("No video URLs were captured after triggering playback and polling.")
-                        else:
-                            logger.info(f"Video URLs captured after playback: {captured_video_urls}")
-                    except Exception as e:
-                        logger.warning(f"Failed to trigger video playback or poll for video response: {e}")
+                    logger.info("Muted blob URL detected, attempting progressive stream resolution fallbacks...")
+                    resolved_url = None
+                    last_resort_url = None
 
-                    # After attempting to trigger playback and capture, check captured_video_urls
-                    logger.info(f"Captured video URLs so far: {captured_video_urls}")
-                    if video_counter < len(captured_video_urls):
-                        media_url = captured_video_urls[video_counter]
-                        logger.info(f"Resolved blob to captured URL: {media_url}")
-                    elif captured_video_urls:
-                        # Try to find a captured video URL that hasn't been used yet
-                        unused_captured = [u for u in captured_video_urls if not any(item["url"] == u for item in media_items_data)]
-                        if unused_captured:
-                            media_url = unused_captured[0]
-                            logger.info(f"Resolved blob to unused captured URL: {media_url}")
-                        else:
-                            logger.info("All captured video URLs already used. Proceeding to other fallbacks.")
+                    # Fallback 1: Query JSON endpoints with active session cookies using safe in-page evaluation and APIRequestContext fallback
+                    if not resolved_url:
+                        try:
+                            endpoints = [
+                                f"https://www.instagram.com/api/v1/web/posts/{shortcode}/info/",
+                                f"https://www.instagram.com/api/v1/posts/{shortcode}/info/",
+                                f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+                            ]
+                            api_headers = {
+                                "User-Agent": user_agent,
+                                "X-IG-App-ID": "936619743392459",
+                                "X-Requested-With": "XMLHttpRequest",
+                                "Referer": f"https://www.instagram.com/p/{shortcode}/"
+                            }
+                            for json_url in endpoints:
+                                logger.info(f"[Diagnostic] Fallback 1: Fetching post metadata JSON (In-page Fetch) from: {json_url}")
+                                text = None
+                                try:
+                                    js_fetch_json = """
+                                    async (url) => {
+                                        try {
+                                            const response = await fetch(url);
+                                            if (!response.ok) {
+                                                return { status: response.status, error: `HTTP ${response.status}` };
+                                            }
+                                            const data = await response.text();
+                                            return { status: response.status, text: data };
+                                        } catch (e) {
+                                            return { status: 0, error: e.message };
+                                        }
+                                    }
+                                    """
+                                    res = page.evaluate(js_fetch_json, json_url)
+                                    status = res.get("status")
+                                    if status == 200:
+                                        text = res.get("text")
+                                        logger.info(f"[Diagnostic] Fallback 1: In-page fetch succeeded (Status 200).")
+                                        logger.info(f"[Diagnostic] Fallback 1 Raw Response (first 400 chars): {text[:400]}")
+                                    else:
+                                        logger.warning(f"[Diagnostic] Fallback 1: In-page fetch returned status {status}. Error: {res.get('error')}")
+                                except Exception as eval_exc:
+                                    logger.warning(f"[Diagnostic] Fallback 1: In-page fetch evaluation failed: {eval_exc}")
 
-                    if not media_url or media_url.startswith("blob:"):
+                                if not text:
+                                    logger.info(f"[Diagnostic] Fallback 1: Falling back to APIRequestContext Fetch for: {json_url}")
+                                    response = context.request.get(json_url, headers=api_headers)
+                                    logger.info(f"[Diagnostic] Fallback 1: APIRequestContext HTTP Response Status = {response.status}")
+                                    if response.status == 200:
+                                        text = response.text()
+                                        logger.info(f"[Diagnostic] Fallback 1 APIRequestContext Raw Response (first 400 chars): {text[:400]}")
+
+                                if text:
+                                    data = json.loads(text)
+                                    logger.info(f"[Diagnostic] Fallback 1: Decoded JSON Keys: {list(data.keys())}")
+                                    # Handle standard structures
+                                    items = data.get("items", [])
+                                    if not items and "graphql" in data:
+                                        shortcode_media = data["graphql"].get("shortcode_media", {})
+                                        items = [shortcode_media]
+                                    elif not items and "num_results" in data:
+                                        logger.warning("[Diagnostic] Fallback 1: JSON contains results metadata but items list is empty.")
+                                    
+                                    logger.info(f"[Diagnostic] Fallback 1: Found {len(items)} posts inside items list.")
+                                    if items:
+                                        item_data = items[0]
+                                        logger.info(f"[Diagnostic] Fallback 1: First item keys: {list(item_data.keys())}")
+                                        carousel_media = item_data.get("carousel_media") or item_data.get("edge_sidecar_to_children", {}).get("edges", [])
+                                        logger.info(f"[Diagnostic] Fallback 1: Carousel container elements found = {len(carousel_media) if carousel_media else 0}")
+                                        
+                                        candidate_urls = []
+                                        if is_carousel and carousel_media:
+                                            if slide_idx < len(carousel_media):
+                                                slide = carousel_media[slide_idx]
+                                                if isinstance(slide, dict) and "node" in slide:
+                                                    slide = slide["node"]
+                                                
+                                                versions = slide.get("video_versions", [])
+                                                for v in versions:
+                                                    if "url" in v:
+                                                        candidate_urls.append(v["url"])
+                                                if "video_url" in slide:
+                                                    candidate_urls.append(slide["video_url"])
+                                        else:
+                                            versions = item_data.get("video_versions", [])
+                                            for v in versions:
+                                                if "url" in v:
+                                                    candidate_urls.append(v["url"])
+                                            if "video_url" in item_data:
+                                                candidate_urls.append(item_data["video_url"])
+                                        
+                                        logger.info(f"[Diagnostic] Fallback 1: Extracted {len(candidate_urls)} total raw stream candidates.")
+                                        progressive_candidates = []
+                                        for u in candidate_urls:
+                                            is_prog = _is_progressive_url(u)
+                                            logger.info(f"[Diagnostic] Fallback 1 Check: Stream URL: {u[:80]}... | Classified progressive: {is_prog}")
+                                            if is_prog:
+                                                progressive_candidates.append(u)
+                                            try:
+                                                import urllib.parse
+                                                parsed_u = urllib.parse.urlparse(u)
+                                                q_params = urllib.parse.parse_qs(parsed_u.query)
+                                                if "efg" in q_params:
+                                                    efg_val = q_params["efg"][0]
+                                                    padded = efg_val + "=" * ((4 - len(efg_val) % 4) % 4)
+                                                    decoded_efg = base64.b64decode(padded).decode("utf-8", errors="ignore")
+                                                    efg_data = json.loads(decoded_efg)
+                                            except Exception:
+                                                pass
+                                        
+                                        best_candidates = progressive_candidates if progressive_candidates else candidate_urls
+                                        if best_candidates:
+                                            candidate = best_candidates[0]
+                                            if _is_progressive_url(candidate):
+                                                resolved_url = candidate
+                                                logger.info(f"Resolved blob to JSON-derived progressive video stream: {resolved_url[:100]}...")
+                                                break
+                                            else:
+                                                logger.info(f"[Diagnostic] Fallback 1 resolved to a DASH URL. Saving as last resort and continuing search: {candidate[:100]}...")
+                                                last_resort_url = candidate
+                                else:
+                                    logger.warning(f"[Diagnostic] Fallback 1: Endpoint {json_url} failed all fetch attempts.")
+                        except Exception as json_exc:
+                            logger.warning(f"Failed to fetch progressive stream from JSON API: {json_exc}")
+
+                    # Fallback 2: Meta property og:video (progressive format)
+                    if not resolved_url:
+                        logger.info("[Diagnostic] Fallback 2: Scanning page DOM meta og:video tags...")
                         meta_video = page.query_selector("meta[property='og:video']")
                         if meta_video:
                             candidate_meta = meta_video.get_attribute("content")
-                            if candidate_meta and not any(item["url"] == candidate_meta for item in media_items_data):
-                                media_url = candidate_meta
-                                logger.info(f"Resolved blob to meta property og:video: {media_url}")
-                        
-                        # Fallback: Parse progressive mp4 CDN streams directly from hydrated page metadata
-                        if not media_url or media_url.startswith("blob:"):
-                            try:
-                                html_content = page.content()
-                                # Normalize JSON-escaped slashes before decoding
-                                normalized_html = html_content.replace("\\/", "/")
-                                decoded_content = normalized_html.encode('utf-8').decode('unicode_escape', errors='ignore')
-                                mp4_matches = re.findall(
+                            logger.info(f"[Diagnostic] Fallback 2: Found meta tag content: {candidate_meta[:100] if candidate_meta else 'None'}")
+                            if candidate_meta:
+                                candidate_asset_id = _extract_video_asset_id(candidate_meta)
+                                if not candidate_asset_id:
+                                    try:
+                                        candidate_asset_id = candidate_meta.split("?")[0].split("/")[-1]
+                                    except Exception:
+                                        candidate_asset_id = candidate_meta
+                                
+                                already_used = False
+                                for item in media_items_data:
+                                    item_asset_id = _extract_video_asset_id(item["url"])
+                                    if not item_asset_id:
+                                        try:
+                                            item_asset_id = item["url"].split("?")[0].split("/")[-1]
+                                        except Exception:
+                                            item_asset_id = item["url"]
+                                    if item_asset_id == candidate_asset_id:
+                                        already_used = True
+                                        break
+                                
+                                if not already_used:
+                                    if _is_progressive_url(candidate_meta):
+                                        resolved_url = candidate_meta
+                                        logger.info(f"Resolved blob to meta property og:video (progressive): {resolved_url}")
+                                    else:
+                                        logger.info(f"[Diagnostic] Fallback 2 resolved to a DASH URL. Saving as last resort and continuing search: {candidate_meta[:100]}...")
+                                        last_resort_url = candidate_meta
+                        else:
+                            logger.info("[Diagnostic] Fallback 2: No og:video meta tag located in DOM.")
+
+                    # Fallback 3: Parse progressive mp4 CDN streams directly from hydrated page metadata
+                    if not resolved_url:
+                        try:
+                            logger.info("[Diagnostic] Fallback 3: Fetching raw page content to scrape progressive matching URLs...")
+                            html_content = page.content()
+                            logger.info(f"[Diagnostic] Fallback 3: HTML payload size: {len(html_content)} characters.")
+                            # Normalize JSON-escaped slashes before decoding
+                            normalized_html = html_content.replace("\\/", "/")
+                            decoded_content = normalized_html.encode('utf-8').decode('unicode_escape', errors='ignore')
+                            mp4_matches = re.findall(
+                                r'https://[a-zA-Z0-9.-]+\.(?:cdninstagram\.com|fbcdn\.net)/[^\s"\'\\,]+\.mp4[^\s"\'\\,]*',
+                                decoded_content
+                            )
+                            logger.info(f"[Diagnostic] Fallback 3: Page content regex matching found {len(mp4_matches)} total raw MP4 URLs.")
+                            if mp4_matches:
+                                # Deduplicate matches while preserving order
+                                seen_matches = []
+                                for match in mp4_matches:
+                                    cleaned = re.split(r'(?:&lt;|&gt;|<|>|\\u|\\n|\\t|")', match)[0]
+                                    unescaped = html.unescape(cleaned)
+                                    if unescaped not in seen_matches:
+                                        seen_matches.append(unescaped)
+
+                                logger.info(f"[Diagnostic] Fallback 3: Deduplicated down to {len(seen_matches)} raw URLs.")
+                                # Group and select unique best-quality video URLs
+                                unique_best_urls = _extract_unique_best_video_urls(seen_matches)
+                                logger.info(f"[Diagnostic] Fallback 3: Scored progressive grouping yielded {len(unique_best_urls)} unique best-candidate URLs.")
+                                
+                                # Find the first unused unique asset URL
+                                unused_matches = []
+                                for u in unique_best_urls:
+                                    u_asset_id = _extract_video_asset_id(u)
+                                    if not u_asset_id:
+                                        try:
+                                            u_asset_id = u.split("?")[0].split("/")[-1]
+                                        except Exception:
+                                            u_asset_id = u
+                                            
+                                    already_used = False
+                                    for item in media_items_data:
+                                        item_asset_id = _extract_video_asset_id(item["url"])
+                                        if not item_asset_id:
+                                            try:
+                                                item_asset_id = item["url"].split("?")[0].split("/")[-1]
+                                            except Exception:
+                                                item_asset_id = item["url"]
+                                        if item_asset_id == u_asset_id:
+                                            already_used = True
+                                            break
+                                    if not already_used:
+                                        unused_matches.append(u)
+
+                                logger.info(f"[Diagnostic] Fallback 3: Unused progressive stream matches = {len(unused_matches)}")
+                                if unused_matches:
+                                    candidate = unused_matches[0]
+                                else:
+                                    candidate = seen_matches[0]
+                                    
+                                if _is_progressive_url(candidate):
+                                    resolved_url = candidate
+                                    logger.info(f"Resolved blob to parsed HTML match (progressive, unused): {resolved_url}")
+                                else:
+                                    logger.info(f"[Diagnostic] Fallback 3 resolved to a DASH URL. Saving as last resort and continuing search: {candidate[:100]}...")
+                                    last_resort_url = candidate
+                        except Exception as parse_exc:
+                            logger.warning(f"Failed to parse progressive mp4 from page content: {parse_exc}")
+
+                    # Fallback 4: Fetch progressive stream from Embed endpoint as secondary backup
+                    if not resolved_url:
+                        try:
+                            embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
+                            logger.info(f"[Diagnostic] Fallback 4: Fetching public embed page template from: {embed_url}")
+                            response = context.request.get(embed_url, headers={"User-Agent": user_agent})
+                            logger.info(f"[Diagnostic] Fallback 4: Embed HTTP Response Status = {response.status}")
+                            if response.status == 200:
+                                embed_html = response.text()
+                                # Normalize JSON-escaped slashes
+                                normalized_embed = embed_html.replace("\\/", "/")
+                                decoded_embed = normalized_embed.encode('utf-8').decode('unicode_escape', errors='ignore')
+                                
+                                embed_mp4_matches = re.findall(
                                     r'https://[a-zA-Z0-9.-]+\.(?:cdninstagram\.com|fbcdn\.net)/[^\s"\'\\,]+\.mp4[^\s"\'\\,]*',
-                                    decoded_content
+                                    decoded_embed
                                 )
-                                if mp4_matches:
-                                    # Deduplicate matches while preserving order
-                                    seen_matches = []
-                                    for match in mp4_matches:
+                                logger.info(f"[Diagnostic] Fallback 4: Embed template matching found {len(embed_mp4_matches)} total raw MP4 URLs.")
+                                if embed_mp4_matches:
+                                    seen_embed_matches = []
+                                    for match in embed_mp4_matches:
                                         cleaned = re.split(r'(?:&lt;|&gt;|<|>|\\u|\\n|\\t|")', match)[0]
                                         unescaped = html.unescape(cleaned)
-                                        if unescaped not in seen_matches:
-                                            seen_matches.append(unescaped)
+                                        if unescaped not in seen_embed_matches:
+                                            seen_embed_matches.append(unescaped)
+                                    
+                                    progressive_embed_urls = []
+                                    for u in seen_embed_matches:
+                                        is_prog = _is_progressive_url(u)
+                                        logger.info(f"[Diagnostic] Fallback 4 Check: Stream URL: {u[:80]}... | Classified progressive: {is_prog}")
+                                        if is_prog:
+                                            progressive_embed_urls.append(u)
+                                    
+                                    logger.info(f"[Diagnostic] Fallback 4: Progressive candidates parsed = {len(progressive_embed_urls)}")
+                                    if progressive_embed_urls:
+                                        candidate = progressive_embed_urls[0]
+                                        if _is_progressive_url(candidate):
+                                            resolved_url = candidate
+                                            logger.info(f"Resolved blob to progressive embed stream: {resolved_url[:100]}...")
+                                        else:
+                                            logger.info(f"[Diagnostic] Fallback 4 resolved to a DASH URL. Saving as last resort and continuing search: {candidate[:100]}...")
+                                            last_resort_url = candidate
+                        except Exception as embed_exc:
+                            logger.warning(f"Failed to fetch progressive stream from embed page: {embed_exc}")
 
-                                    # Find the first unused mp4 match
-                                    unused_matches = [m for m in seen_matches if not any(item["url"] == m for item in media_items_data)]
-                                    if unused_matches:
-                                        media_url = unused_matches[0]
-                                        logger.info(f"Resolved blob to parsed HTML match (unused): {media_url}")
-                                    elif len(seen_matches) > video_counter:
-                                        media_url = seen_matches[video_counter]
-                                        logger.info(f"Resolved blob to parsed HTML match at index {video_counter}: {media_url}")
-                                    else:
-                                        media_url = seen_matches[0]
-                                        logger.info(f"Resolved blob to first parsed HTML match fallback: {media_url}")
-                            except Exception as parse_exc:
-                                logger.warning(f"Failed to parse progressive mp4 from page content: {parse_exc}")
-                        
-                        if not media_url or media_url.startswith("blob:"):
-                            raise ValueError("Video source is a blob and no direct stream URL was intercepted.")
+                    # Fallback 4.5: Use DASH fallback if no progressive is available
+                    if not resolved_url and last_resort_url:
+                        resolved_url = last_resort_url
+                        logger.info(f"[Diagnostic] No progressive streams found across all fallbacks. Using the highest quality DASH stream as absolute last resort: {resolved_url[:100]}...")
+
+                    # Fallback 5: Trigger video playback to capture streaming assets (DASH video-only, last resort)
+                    if not resolved_url:
+                        logger.info("Progressive sources not found; falling back to network capture playback...")
+                        try:
+                            def is_video_response(resp):
+                                try:
+                                    content_type = resp.headers.get("content-type", "") or ""
+                                    url = resp.url or ""
+                                    is_video = "video" in content_type or any(url.endswith(ext) for ext in [".mp4", ".mov", ".webm"])
+                                    if is_video and not any(chunk in url for chunk in ["bytestart=", "byteend=", ".m4s", "seg-", "fragment", "chunk"]):
+                                        return True
+                                except Exception:
+                                    pass
+                                return False
+
+                            with page.expect_response(is_video_response, timeout=10000) as response_info:
+                                page.evaluate("(v) => { if (v) { v.muted = true; v.play().catch(() => {}); } }", video_elem)
+                            
+                            resolved_url = response_info.value.url
+                            logger.info(f"Resolved blob to captured network response URL (last resort): {resolved_url[:100]}...")
+                        except Exception as e:
+                            logger.warning(f"Failed to capture video stream response for blob URL: {e}")
+
+                    if resolved_url:
+                        media_url = resolved_url
+                    else:
+                        raise ValueError("Video source is a blob and no stream URL could be resolved.")
                 ext = "mp4"
-                video_counter += 1
             elif img_elem:
                 ext = "jpg"
             else:

@@ -23,10 +23,15 @@ already saved.
 - Authenticate by reusing active Firefox Instagram cookies, including cookies
   stored in Firefox Multi-Account Container partitions.
 - Download post and carousel media through layered Playwright retrieval
-  strategies for CDN responses, blob videos, page metadata, canvas-readable
-  images, in-page fetches, and screenshot fallback for images.
-- Avoid duplicate carousel video saves by preferring unused captured URLs and
-  metadata candidates before falling back to previously seen streams.
+  strategies for CDN responses, progressive blob-video stream resolution, page
+  metadata, canvas-readable images, in-page fetches, and screenshot fallback
+  for images.
+- Resolve Instagram blob videos by preferring progressive MP4 streams from JSON
+  metadata, Open Graph tags, hydrated page HTML, and embed pages before falling
+  back to captured playback streams.
+- Avoid duplicate carousel video saves by grouping stream candidates by asset
+  ID and selecting the best unused progressive URL before falling back to
+  previously seen streams.
 - Name files from the original post owner and post timestamp when Instagram
   exposes them, using page metadata and DOM fallbacks when needed.
 - Track downloaded post shortcodes in `download_history_<account>.db` with

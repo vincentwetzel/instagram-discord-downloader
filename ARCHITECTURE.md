@@ -50,12 +50,16 @@ stays responsive.
    - Fetches saved posts for each configured user, including post and reel
      links from the saved-posts grid.
    - Downloads post and carousel media through Playwright using captured
-     network responses, blob-video stream resolution, page metadata, in-page
-     fetches, context requests, canvas extraction, and image screenshot
-     fallback.
-   - Deduplicates carousel video candidates by preferring unused captured URLs,
-     Open Graph video metadata, and parsed page-source MP4 streams before
-     falling back to already-seen streams.
+     network responses, progressive blob-video stream resolution, page
+     metadata, in-page fetches, context requests, canvas extraction, and image
+     screenshot fallback.
+   - Resolves blob videos through layered metadata fallbacks: Instagram JSON
+     endpoints, Open Graph video tags, hydrated page-source MP4 streams, embed
+     page MP4 streams, and finally captured playback responses.
+   - Deduplicates carousel video candidates by grouping URLs by video asset ID,
+     scoring progressive streams above DASH segments, preferring higher quality
+     candidates, and selecting unused streams before falling back to
+     already-seen streams.
    - Derives output filenames from the original post owner and post timestamp,
      using URL parsing, JSON metadata, page-source state, strict title metadata,
      article header links, and DOM fallbacks.
@@ -94,10 +98,10 @@ stays responsive.
 - `downloader.auth`: Session loading helpers and Firefox cookie import.
 - `downloader.config`: `settings.ini` parsing and typed config object.
 - `downloader.downloads`: Saved-post retrieval, Firefox cookie-jar selection,
-  duplicate filtering, carousel traversal, layered media downloads, video URL
-  candidate deduplication, configurable storage paths, owner/timestamp-based
-  filenames, recommendation media filtering, per-post error capture, and
-  rate-limit friendly delays.
+  duplicate filtering, carousel traversal, layered media downloads,
+  progressive video stream scoring, video URL candidate deduplication,
+  configurable storage paths, owner/timestamp-based filenames, recommendation
+  media filtering, per-post error capture, and rate-limit friendly delays.
 - `downloader.history`: SQLite schema setup, shortcode reads/writes, and stale
   history pruning.
 - `downloader.logging_utils`: Timestamped console logging helpers and optional
@@ -122,10 +126,11 @@ stays responsive.
 5. Stale shortcode rows for unsaved posts are pruned from history.
 6. New posts are opened individually; active media is selected from the opened
    post, excluding recommendation-grid candidates, then captured from the DOM,
-   network responses, page metadata, and fallback retrieval tiers. Carousel
-   videos prefer unused URL candidates so multiple slides do not resolve to the
-   same stream, then media is written locally with owner/timestamp-based
-   filenames.
+   network responses, page metadata, and fallback retrieval tiers. Blob videos
+   prefer progressive MP4 metadata sources before playback capture, and
+   carousel videos prefer unused asset-grouped URL candidates so multiple
+   slides do not resolve to the same stream. Media is then written locally with
+   owner/timestamp-based filenames.
 7. Successful downloads are recorded with `INSERT OR IGNORE`.
 8. Downloader log messages are forwarded to Discord as live status-message
    edits while the session runs.
