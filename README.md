@@ -19,8 +19,8 @@ already saved.
   `logs/`, keeping only recent runs.
 - Prevent overlapping sessions with an async download lock and a local
   single-instance socket lock.
-- Authenticate by reusing active Firefox Instagram cookies for one configured
-  account per run.
+- Authenticate by reusing active Firefox Instagram cookies for the account
+  currently logged in with Firefox.
 - Download post and carousel media through layered Playwright retrieval
   strategies for CDN responses, progressive blob-video stream resolution, page
   metadata, canvas-readable images, in-page fetches, and screenshot fallback
@@ -107,8 +107,8 @@ base_download_path = downloads/{account_name}
 The downloader uses your active Firefox Instagram session for authentication.
 Log into Instagram in Firefox as the account you want to download before running
 the bot. Only one account is processed per run; to use a different account,
-switch Firefox to that account and update `ig_name` before starting the next
-download. Each account keeps its own `download_history_<account>.db` file.
+switch Firefox to that account before starting the next download. Each account
+keeps its own `download_history_<account>.db` file.
 
 The `[Storage]` section is optional. If `base_download_path` is omitted, media is
 saved to `downloads/<account_name>/`. When provided, `{account_name}` or
@@ -141,12 +141,16 @@ Now that the bot is running and in your server:
   channel the bot can see to download **all** new saved posts.
 - Use `/ig_download max_posts:10` (or `!download 10`) to limit the session to a
   maximum of 10 posts.
+- `/ig_download` only accepts the optional `max_posts` argument. It does not
+  take a `target_account` option because downloads use the Instagram account
+  currently logged in with Firefox.
 - Send the bot a direct message containing only a number, such as `10`, to run
   a limited session from DMs.
 
-If the bot reports that no Firefox session was found or that the account does
-not match, log into the configured Instagram account in Firefox and run the
-command again.
+If Discord still shows an old `target_account` slash-command option, restart the
+bot so it can clear stale guild command registrations and sync the current
+command schema. If the bot reports that no Firefox session was found, log into
+Instagram in Firefox and run the command again.
 
 ## Command-Line Usage
 

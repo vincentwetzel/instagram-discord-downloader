@@ -104,6 +104,7 @@ bot: IGDownloaderBot = IGDownloaderBot(command_prefix="!", intents=intents)
 download_lock: Optional[asyncio.Lock] = None
 _is_synced: bool = False
 _sent_startup_dm: bool = False
+STALE_GUILD_COMMANDS: tuple[str, ...] = ("ig_download",)
 
 
 def _get_download_lock() -> asyncio.Lock:
@@ -117,12 +118,35 @@ def _get_download_lock() -> asyncio.Lock:
         download_lock = asyncio.Lock()
     return download_lock
 
+
+async def _clear_stale_guild_commands() -> None:
+    """Remove old guild-scoped slash commands that can override global commands."""
+
+    for guild in bot.guilds:
+        stale_commands = [
+            command
+            for command in await bot.tree.fetch_commands(guild=guild)
+            if command.name in STALE_GUILD_COMMANDS
+        ]
+        if not stale_commands:
+            continue
+
+        bot.tree.clear_commands(guild=guild)
+        await bot.tree.sync(guild=guild)
+        stale_names = ", ".join(command.name for command in stale_commands)
+        logger.info(
+            "Cleared stale guild slash command(s) for %s: %s",
+            guild.name,
+            stale_names,
+        )
+
 @bot.event
 async def on_ready() -> None:
     """Handle bot readiness and sync slash commands."""
     global _is_synced, _sent_startup_dm
     if not _is_synced:
         try:
+            await _clear_stale_guild_commands()
             synced = await bot.tree.sync()
             logger.info(f"Synced {len(synced)} slash command(s).")
             _is_synced = True

@@ -44,8 +44,8 @@ stays responsive.
      logging, and session orchestration in focused modules under `downloader/`.
    - Handles Instagram authentication by importing cookies from the most
      recently active Instagram cookie session in an active Firefox profile.
-   - Supports one Instagram username from `settings.ini` per run.
-   - Fetches saved posts for the configured user, including post and reel
+   - Supports one active Firefox Instagram account per run.
+   - Fetches saved posts for the active Firefox user, including post and reel
      links from the saved-posts grid.
    - Downloads post and carousel media through Playwright using captured
      network responses, progressive blob-video stream resolution, page
@@ -72,9 +72,9 @@ stays responsive.
 3. **Configuration (`settings.ini`)**
    - Stores the Discord bot token, allowed Discord user ID, Instagram
      credentials, and optional storage path template.
-   - Uses `[Credentials].ig_name` for the single account processed during the
-     current run. Users can change this value between runs when they switch
-     Firefox to a different Instagram account.
+   - Uses the active Firefox Instagram session for the account processed during
+     the current run. Users can switch Firefox to a different Instagram account
+     between runs.
    - Uses `[Storage].base_download_path` when configured. The downloader
      replaces `{account_name}` or `{username}` with the account currently being
      processed, falling back to `downloads/<account_name>/` when the setting is
@@ -120,9 +120,9 @@ stays responsive.
    other downloads are running, locks the session, and delegates to the
    downloader engine in a background thread.
 3. Downloader loads config, locates Firefox's active Instagram cookies, and
-   launches a headless Chromium context for the configured account's
-   saved-posts page. Users can switch accounts between runs by changing
-   `ig_name` and switching Firefox to that account.
+   launches a headless Chromium context for the active account's saved-posts
+   page. Users can switch accounts between runs by switching Firefox to that
+   account.
 4. Downloader queries Instagram for saved posts and reels, then compares
    shortcodes against the account-specific history database.
 5. Stale shortcode rows for unsaved posts are pruned from history.
