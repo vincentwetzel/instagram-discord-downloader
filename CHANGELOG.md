@@ -23,8 +23,6 @@ and this project adheres to Semantic Versioning.
 - Owner-only numeric DM shortcut for limited download sessions.
 - Live Discord progress updates by forwarding downloader log messages to the
   initial status message.
-- Firefox Multi-Account Container-aware cookie jar selection for Instagram
-  authentication.
 - Layered Playwright media retrieval for saved post and carousel downloads,
   including captured responses, blob-video stream resolution, in-page fetches,
   context requests, canvas extraction, and image screenshot fallback.
@@ -50,6 +48,8 @@ and this project adheres to Semantic Versioning.
   setting up the Discord Developer Portal, bot intents, and finding User IDs.
 - Improved carousel traversal by locating the next button relative to the
   active media item and waiting for slide transitions before capture.
+- Simplified Instagram authentication to use one configured account per run
+  from the currently active Firefox session.
 
 ### Fixed
 - Fixed a bug where pruning of stale database entries would be incorrectly

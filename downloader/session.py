@@ -12,12 +12,11 @@ from downloader.reporting import build_report
 from downloader.timing import sleep_with_countdown
 
 
-def run_download_session(max_posts: Optional[int] = None, target_account: Optional[str] = None) -> str:
+def run_download_session(max_posts: Optional[int] = None) -> str:
     """Run the Playwright download session and return a report string.
 
     Args:
         max_posts: Optional maximum number of posts to download this session.
-        target_account: Optional specific Instagram account name to target.
 
     Returns:
         Text report describing the session outcome.
@@ -29,55 +28,30 @@ def run_download_session(max_posts: Optional[int] = None, target_account: Option
     log("")
 
     config = load_downloader_config()
-    accounts = config.ig_names
-    if not accounts:
-        raise RuntimeError("No Instagram accounts configured in settings.ini under [Credentials] ig_name.")
-
-    if target_account:
-        target_account = target_account.strip()
-        if target_account not in accounts:
-            raise ValueError(
-                f"Target account '{target_account}' is not in configured accounts: {', '.join(accounts)}"
-            )
-        accounts = [target_account]
+    account = config.ig_name
 
     start_time = datetime.now()
     log(f"Script started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
+    log(f"\n>>> Starting session for account: {account} <<<")
+    sleep_with_countdown(
+        random.randint(5, 15),
+        "Sleeping for {delay} seconds before starting browser session...",
+        "  Starting downloads in {remaining} seconds...",
+    )
 
-    reports = []
-    for account in accounts:
-        log(f"\n>>> Starting session for account: {account} <<<")
-        sleep_with_countdown(
-            random.randint(5, 15),
-            "Sleeping for {delay} seconds before starting browser session...",
-            "  Starting downloads in {remaining} seconds...",
-        )
+    db_path = get_history_db_path(account)
+    stats = download_saved_posts(account, max_posts)
+    end_time = datetime.now()
 
-        try:
-            db_path = get_history_db_path(account)
-            stats = download_saved_posts(account, max_posts)
-            end_time = datetime.now()
-            
-            account_report = build_report(
-                account,
-                start_time,
-                end_time,
-                max_posts,
-                db_path,
-                stats,
-            )
-            reports.append(account_report)
-        except Exception as exc:
-            log(f"❌ Error running download session for {account}: {exc}")
-            reports.append(
-                f"============================================================\n"
-                f"Session Report for {account} (FAILED)\n"
-                f"Error: {exc}\n"
-                f"============================================================"
-            )
-
-    return "\n\n".join(reports)
+    return build_report(
+        account,
+        start_time,
+        end_time,
+        max_posts,
+        db_path,
+        stats,
+    )
 
 
 def prompt_for_max_posts() -> Optional[int]:

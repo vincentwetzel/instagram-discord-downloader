@@ -56,18 +56,15 @@ from downloader.reporting import DownloadStats
 from downloader.timing import sleep_with_countdown
 
 
-def _extract_playwright_cookie_jars(cookiefile_path: Path) -> list[list[dict[str, Any]]]:
-    """Extract Firefox cookies for Instagram, grouping them by Firefox container partition.
+def _extract_playwright_cookies(cookiefile_path: Path) -> list[dict[str, Any]]:
+    """Extract Firefox cookies for the most recently active Instagram session.
 
     Args:
         cookiefile_path: Path to Firefox's cookies.sqlite file.
 
     Returns:
-        List of cookie list jars, sorted by most recently accessed.
+        Cookie list ready for Playwright.
     """
-    import collections
-    jars = collections.defaultdict(list)
-    jar_latest_access = collections.defaultdict(int)
 
     conn = sqlite3.connect(cookiefile_path)
     cursor = conn.cursor()
@@ -84,20 +81,37 @@ def _extract_playwright_cookie_jars(cookiefile_path: Path) -> list[list[dict[str
             query_cols.append("lastAccessed")
 
         query = f"SELECT {', '.join(query_cols)} FROM moz_cookies WHERE host LIKE ?"
+        if has_last_accessed:
+            query += " ORDER BY lastAccessed DESC"
         cursor.execute(query, ("%instagram.com%",))
-        
-        for row in cursor.fetchall():
+
+        rows = cursor.fetchall()
+        if not rows:
+            return []
+
+        active_origin_attr = ""
+        if has_origin_attrs:
+            active_origin_attr = dict(zip(query_cols, rows[0])).get(
+                "originAttributes",
+                "",
+            )
+
+        cookies = []
+        for row in rows:
             row_dict = dict(zip(query_cols, row))
+            if (
+                has_origin_attrs
+                and row_dict.get("originAttributes", "") != active_origin_attr
+            ):
+                continue
+
             name = row_dict["name"]
             value = row_dict["value"]
             host = row_dict["host"]
             path = row_dict["path"]
             is_secure = row_dict["isSecure"]
             expiry = row_dict["expiry"]
-            
-            origin_attr = row_dict.get("originAttributes", "")
-            last_accessed = row_dict.get("lastAccessed", 0)
-            
+
             cookie = {
                 "name": name,
                 "value": value,
@@ -107,15 +121,13 @@ def _extract_playwright_cookie_jars(cookiefile_path: Path) -> list[list[dict[str
             }
             if isinstance(expiry, (int, float)) and expiry > 0:
                 cookie["expires"] = min(int(expiry), 2147483647)
-                
-            jars[origin_attr].append(cookie)
-            if last_accessed > jar_latest_access[origin_attr]:
-                jar_latest_access[origin_attr] = last_accessed
+
+            cookies.append(cookie)
     finally:
         conn.close()
 
-    sorted_keys = sorted(jars.keys(), key=lambda k: jar_latest_access[k], reverse=True)
-    return [jars[k] for k in sorted_keys]
+    return cookies
+
 
 def download_saved_posts(account_name: str, max_posts: Optional[int]) -> DownloadStats:
     """Download saved posts for the configured account.
@@ -138,100 +150,67 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
     if not cookiefile_str:
         raise RuntimeError("No active Firefox session profile found. Please login to Firefox first.")
 
-    cookie_jars = _extract_playwright_cookie_jars(Path(cookiefile_str))
-    if not cookie_jars:
+    cookies = _extract_playwright_cookies(Path(cookiefile_str))
+    if not cookies:
         raise RuntimeError("No Instagram cookies found in the selected Firefox profile.")
 
     log("Launching automated stealth browser...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-web-security"])
-        
-        active_context = None
-        active_page = None
-        active_captured_video_urls = None
-        active_captured_responses = None
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            bypass_csp=True,
+        )
+        context.add_cookies(cookies)
+        page = context.new_page()
+        inject_stealth(page)
 
-        for jar_idx, jar_cookies in enumerate(cookie_jars):
-            logger.debug(f"Testing cookie jar {jar_idx + 1}/{len(cookie_jars)}...")
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                bypass_csp=True
-            )
-            context.add_cookies(jar_cookies)
-            page = context.new_page()
-            inject_stealth(page)
+        captured_video_urls = []
+        captured_responses = {}
 
-            captured_video_urls = []
-            captured_responses = {}
+        def _capture_responses(response: Any) -> None:
+            try:
+                url = response.url
+                if not ("instagram.com" in url or "fbcdn.net" in url):
+                    return
 
-            def _capture_responses(response, urls_ref=captured_video_urls, resps_ref=captured_responses):
-                try:
-                    url = response.url
-                    if not ("instagram.com" in url or "fbcdn.net" in url):
+                content_type = response.headers.get("content-type", "")
+                is_video = (
+                    "video" in content_type
+                    or "mime=video" in url
+                    or any(url.endswith(ext) for ext in [".mp4", ".mov", ".webm"])
+                )
+                is_image = "image" in content_type
+
+                if is_video or is_image:
+                    chunks = [
+                        "bytestart=",
+                        "byteend=",
+                        ".m4s",
+                        "seg-",
+                        "fragment",
+                        "chunk",
+                    ]
+                    if any(chunk in url for chunk in chunks):
                         return
 
-                    content_type = response.headers.get("content-type", "")
-                    is_video = "video" in content_type or "mime=video" in url or any(url.endswith(ext) for ext in [".mp4", ".mov", ".webm"])
-                    is_image = "image" in content_type
+                    if is_video and url not in captured_video_urls:
+                        captured_video_urls.append(url)
+                        logger.info(
+                            "Added video stream URL to captured_video_urls: "
+                            f"{url[:100]}..."
+                        )
 
-                    if is_video or is_image:
-                        if any(chunk in url for chunk in ["bytestart=", "byteend=", ".m4s", "seg-", "fragment", "chunk"]):
-                            return
+                    captured_responses[url] = response
+            except Exception:
+                pass
 
-                        if is_video and url not in urls_ref:
-                            urls_ref.append(url)
-                            logger.info(f"Added video stream URL to captured_video_urls: {url[:100]}...")
-                        
-                        resps_ref[url] = response
-                except Exception:
-                    pass
-
-            page.on("response", _capture_responses)
-
-            try:
-                page.goto(f"https://www.instagram.com/{account_name}/saved/all-posts/", wait_until="networkidle")
-                
-                if "login" in page.url:
-                    logger.debug(f"Cookie jar {jar_idx + 1} redirected to login.")
-                    context.close()
-                    continue
-
-                if f"/{account_name}/saved/" not in page.url:
-                    logger.debug(f"Cookie jar {jar_idx + 1} mismatch: expected '/{account_name}/saved/', landed on '{page.url}'.")
-                    context.close()
-                    continue
-                
-                # Successfully authenticated with this container!
-                log(f"Successfully authenticated as '{account_name}' using cookie container {jar_idx + 1}!")
-                active_context = context
-                active_page = page
-                active_captured_video_urls = captured_video_urls
-                active_captured_responses = captured_responses
-                break
-            except Exception as test_exc:
-                logger.debug(f"Cookie jar {jar_idx + 1} test raised an exception: {test_exc}")
-                context.close()
-                continue
-
-        if not active_context or not active_page:
-            raise RuntimeError(
-                f"Could not log in as '{account_name}' using your Firefox session.\n\n"
-                f"To fix this, please follow these quick steps:\n"
-                f"1. Open your Firefox browser and go to https://www.instagram.com\n"
-                f"2. Make sure you are logged into the account '{account_name}'.\n"
-                f"3. If you have multiple logged-in accounts, click 'Switch Accounts' on Instagram and select '{account_name}' to make it the active profile.\n"
-                f"4. (Advanced) If you use Firefox Multi-Account Containers, verify you have logged into '{account_name}' inside one of your container tabs.\n"
-                f"5. Once verified, run this command again!"
-            )
-
-        context = active_context
-        page = active_page
-        captured_video_urls = active_captured_video_urls
-        captured_responses = active_captured_responses
+        page.on("response", _capture_responses)
 
         log("Accessing saved posts index...")
         try:

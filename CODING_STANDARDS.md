@@ -55,6 +55,10 @@ and application stability.
   workflow logic in `downloader.downloads`, SQLite logic in
   `downloader.history`, report formatting in `downloader.reporting`, and
   Discord-specific behavior in `discord_bot.py`.
+- **Account Scope:** Download sessions process one configured Instagram account
+  per run. Users may switch accounts between runs by changing `ig_name` and
+  switching Firefox to that account, but the code should not iterate multiple
+  configured accounts in one session.
 - **Media Retrieval:** Keep Instagram media fallback logic layered and
   observable. Blob-video handling should prefer progressive audio-included MP4
   sources before DASH or captured playback fallbacks, and carousel stream
@@ -67,6 +71,9 @@ and application stability.
   (`download_history_<account>.db`), rely on SQL constraints to maintain
   idempotency. Use `INSERT OR IGNORE` to prevent duplicate tracking of
   downloaded posts.
+- **Account Isolation:** Keep history databases and default download folders
+  keyed by the configured Instagram account name so manually switched accounts
+  retain separate state across runs.
 - **History Syncing:** Changes to how posts are considered downloaded, skipped,
   or stale must update `downloader.history` and any affected report counters.
 - **Connection Management:** Ensure all database connections are committed when
@@ -88,9 +95,9 @@ and application stability.
 ## 5. Security
 
 - **Credentials:** Never hardcode Discord tokens, Instagram usernames, or
-  browser session details in source code. Use `configparser` to read usernames
-  and Discord credentials from `settings.ini`; derive Instagram authentication
-  from the user's active Firefox cookies.
+  browser session details in source code. Use `configparser` to read the
+  per-run Instagram username and Discord credentials from `settings.ini`;
+  derive Instagram authentication from the user's active Firefox cookies.
 - **Version Control:** Ensure `settings.ini`, `download_history*`, downloaded
   media files, browser session artifacts, logs, and Python caches are excluded
   from version control through `.gitignore`.

@@ -42,12 +42,10 @@ stays responsive.
    - Keeps `instaloader_downloader.py` as the compatibility entry point.
    - Organizes auth, configuration, history tracking, reporting, timing,
      logging, and session orchestration in focused modules under `downloader/`.
-   - Handles Instagram authentication by importing cookies from an active
-     Firefox profile, grouping cookies by Firefox container partition, and
-     testing each jar until one can access the requested account.
-   - Supports one or more comma-separated Instagram usernames from
-     `settings.ini`.
-   - Fetches saved posts for each configured user, including post and reel
+   - Handles Instagram authentication by importing cookies from the most
+     recently active Instagram cookie session in an active Firefox profile.
+   - Supports one Instagram username from `settings.ini` per run.
+   - Fetches saved posts for the configured user, including post and reel
      links from the saved-posts grid.
    - Downloads post and carousel media through Playwright using captured
      network responses, progressive blob-video stream resolution, page
@@ -74,6 +72,9 @@ stays responsive.
 3. **Configuration (`settings.ini`)**
    - Stores the Discord bot token, allowed Discord user ID, Instagram
      credentials, and optional storage path template.
+   - Uses `[Credentials].ig_name` for the single account processed during the
+     current run. Users can change this value between runs when they switch
+     Firefox to a different Instagram account.
    - Uses `[Storage].base_download_path` when configured. The downloader
      replaces `{account_name}` or `{username}` with the account currently being
      processed, falling back to `downloads/<account_name>/` when the setting is
@@ -97,7 +98,7 @@ stays responsive.
 
 - `downloader.auth`: Session loading helpers and Firefox cookie import.
 - `downloader.config`: `settings.ini` parsing and typed config object.
-- `downloader.downloads`: Saved-post retrieval, Firefox cookie-jar selection,
+- `downloader.downloads`: Saved-post retrieval, Firefox cookie import,
   duplicate filtering, carousel traversal, layered media downloads,
   progressive video stream scoring, video URL candidate deduplication,
   configurable storage paths, owner/timestamp-based filenames, recommendation
@@ -118,9 +119,10 @@ stays responsive.
 2. Bot verifies the invoking user matches `allowed_user_id`, checks that no
    other downloads are running, locks the session, and delegates to the
    downloader engine in a background thread.
-3. Downloader loads config, locates Firefox's active Instagram cookies, groups
-   them by container partition, and launches headless Chromium contexts until
-   one can access the requested account's saved-posts page.
+3. Downloader loads config, locates Firefox's active Instagram cookies, and
+   launches a headless Chromium context for the configured account's
+   saved-posts page. Users can switch accounts between runs by changing
+   `ig_name` and switching Firefox to that account.
 4. Downloader queries Instagram for saved posts and reels, then compares
    shortcodes against the account-specific history database.
 5. Stale shortcode rows for unsaved posts are pruned from history.

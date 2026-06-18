@@ -8,8 +8,7 @@ already saved.
 ## Features
 
 - Trigger downloads from Discord with `/ig_download`, `!download`, or a numeric
-  direct message to the bot owner account. Supports batch processing of multiple
-  accounts in sequence.
+  direct message to the bot owner account.
 - Limit a session with `/ig_download max_posts:10`, `!download 10`, or a DM
   containing only a positive integer.
 - Send owner direct messages when the bot comes online or shuts down cleanly.
@@ -20,8 +19,8 @@ already saved.
   `logs/`, keeping only recent runs.
 - Prevent overlapping sessions with an async download lock and a local
   single-instance socket lock.
-- Authenticate by reusing active Firefox Instagram cookies, including cookies
-  stored in Firefox Multi-Account Container partitions.
+- Authenticate by reusing active Firefox Instagram cookies for one configured
+  account per run.
 - Download post and carousel media through layered Playwright retrieval
   strategies for CDN responses, progressive blob-video stream resolution, page
   metadata, canvas-readable images, in-page fetches, and screenshot fallback
@@ -99,7 +98,7 @@ discord_bot_token = YOUR_DISCORD_BOT_TOKEN
 allowed_user_id = YOUR_DISCORD_USER_ID
 
 [Credentials]
-ig_name = first_username, second_username
+ig_name = your_instagram_username
 
 [Storage]
 base_download_path = downloads/{account_name}
@@ -107,10 +106,9 @@ base_download_path = downloads/{account_name}
 
 The downloader uses your active Firefox Instagram session for authentication.
 Log into Instagram in Firefox as the account you want to download before running
-the bot. If you use multiple Instagram accounts or Firefox Multi-Account
-Containers, make sure each configured username is logged in and selectable in
-Firefox. The downloader tests available Instagram cookie containers and uses
-the one that can access the requested account's saved posts.
+the bot. Only one account is processed per run; to use a different account,
+switch Firefox to that account and update `ig_name` before starting the next
+download. Each account keeps its own `download_history_<account>.db` file.
 
 The `[Storage]` section is optional. If `base_download_path` is omitted, media is
 saved to `downloads/<account_name>/`. When provided, `{account_name}` or
@@ -147,8 +145,7 @@ Now that the bot is running and in your server:
   a limited session from DMs.
 
 If the bot reports that no Firefox session was found or that the account does
-not match, log into the requested Instagram account in Firefox, switch
-Instagram to that account if multiple accounts are signed in, and run the
+not match, log into the configured Instagram account in Firefox and run the
 command again.
 
 ## Command-Line Usage
@@ -158,6 +155,10 @@ Run the downloader directly without Discord:
 ```bash
 python instaloader_downloader.py
 ```
+
+The command-line entry point prints the configured account, then asks for an
+optional post limit before starting the same one-account download session used
+by the Discord bot.
 
 Downloaded media is written under the configured `[Storage]` path, or under
 `downloads/` when no custom path is configured. Local runtime state such as

@@ -166,15 +166,6 @@ async def on_message(message: discord.Message) -> None:
                 send_final=message.channel.send,
             )
             return
-        elif content_stripped:
-            await _handle_download_session(
-                user_id=message.author.id,
-                max_posts=None,
-                send_initial=message.channel.send,
-                send_final=message.channel.send,
-                target_account=content_stripped,
-            )
-            return
 
     await bot.process_commands(message)
 
@@ -184,7 +175,6 @@ async def _handle_download_session(
     send_initial: Callable[[str], Awaitable[Any]],
     send_final: Callable[[str], Awaitable[Any]],
     interaction: Optional[discord.Interaction] = None,
-    target_account: Optional[str] = None,
 ) -> None:
     """Shared logic for prefix and slash download commands.
 
@@ -194,7 +184,6 @@ async def _handle_download_session(
         send_initial: Async callable to send the initial response.
         send_final: Async callable to send the final report.
         interaction: Optional slash command interaction context.
-        target_account: Optional specific Instagram account name to target.
     """
     if str(user_id) != ALLOWED_USER_ID:
         await send_initial("❌ You are not authorized to use this command.")
@@ -216,9 +205,7 @@ async def _handle_download_session(
 
     async with lock:
         limit_text = f"limited to {max_posts} posts" if max_posts else "unlimited"
-        if target_account:
-            limit_text += f" for account '{target_account}'"
-        
+
         status_msg: Optional[discord.Message] = None
         try:
             initial_text = (
@@ -331,7 +318,7 @@ async def _handle_download_session(
         try:
             # Use asyncio.to_thread so the synchronous script doesn't
             # freeze the Discord bot
-            report = await asyncio.to_thread(run_download_session, max_posts, target_account)
+            report = await asyncio.to_thread(run_download_session, max_posts)
             
             # Ensure total message doesn't exceed Discord's 2000 char limit
             max_report_len = 1900
@@ -360,29 +347,19 @@ async def _handle_download_session(
 
 @bot.command(
     name="download",
-    help="Run the Instagram downloader. Examples: !download, !download 10, !download account_b, !download 10 account_b",
+    help="Run the Instagram downloader. Examples: !download, !download 10",
 )
 async def download(
     ctx: commands.Context,
-    arg1: Optional[str] = None,
-    arg2: Optional[str] = None,
+    max_posts: Optional[int] = None,
 ) -> None:
     """Legacy prefix command handler (!download).
 
     Args:
         ctx: Discord command context.
-        arg1: Optional digit limit or targeted account name.
-        arg2: Optional targeted account name (if arg1 was a digit).
+        max_posts: Optional maximum number of posts to download.
     """
-    max_posts = None
-    target_account = None
-    if arg1 is not None:
-        if arg1.isdigit():
-            max_posts = int(arg1)
-            target_account = arg2
-        else:
-            target_account = arg1
-    await _handle_download_session(ctx.author.id, max_posts, ctx.send, ctx.send, target_account=target_account)
+    await _handle_download_session(ctx.author.id, max_posts, ctx.send, ctx.send)
 
 @download.error
 async def download_error(ctx: commands.Context, error: commands.CommandError) -> None:
@@ -401,19 +378,16 @@ async def download_error(ctx: commands.Context, error: commands.CommandError) ->
 @bot.tree.command(name="ig_download", description="Run the Instagram downloader.")
 @app_commands.describe(
     max_posts="Maximum number of posts to download (optional)",
-    target_account="Specific account to download from (optional)"
 )
 async def slash_download(
     interaction: discord.Interaction,
     max_posts: Optional[int] = None,
-    target_account: Optional[str] = None,
 ) -> None:
     """Modern slash command handler (/ig_download).
 
     Args:
         interaction: Discord slash command interaction.
         max_posts: Optional limit on posts to download.
-        target_account: Optional specific account name to target.
     """
     
     async def send_final_safe(msg: str) -> Union[discord.Message, discord.WebhookMessage, None]:
@@ -445,7 +419,6 @@ async def slash_download(
         interaction.response.send_message,
         send_final_safe,
         interaction=interaction,
-        target_account=target_account,
     )
 
 def _enforce_single_instance() -> socket.socket:

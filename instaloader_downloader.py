@@ -28,13 +28,12 @@ __all__ = [
 if __name__ == "__main__":
     try:
         from downloader.config import load_downloader_config
+
         config = load_downloader_config()
-        print("Configured accounts:", ", ".join(config.ig_names))
-        target_input = input("Enter specific account to target (or press Enter for all): ").strip()
-        target_account = target_input if target_input else None
+        print("Configured account:", config.ig_name)
 
         max_posts: Optional[int] = prompt_for_max_posts()
-        report = run_download_session(max_posts, target_account)
+        report = run_download_session(max_posts)
         print(f"\n{report}")
     except KeyboardInterrupt:
         print("\n\nSession interrupted by user. Exiting.")

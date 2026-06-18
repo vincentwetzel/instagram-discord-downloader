@@ -8,13 +8,13 @@ from typing import Union
 
 @dataclass(frozen=True)
 class DownloaderConfig:
-    """Instagram credentials used by the downloader.
+    """Instagram account used by the downloader.
 
     Args:
-        ig_names: List of Instagram usernames to use for downloads.
+        ig_name: Instagram username to use for downloads.
     """
 
-    ig_names: list[str]
+    ig_name: str
 
 
 def load_downloader_config(path: Union[str, Path] = "settings.ini") -> DownloaderConfig:
@@ -25,23 +25,23 @@ def load_downloader_config(path: Union[str, Path] = "settings.ini") -> Downloade
 
     Returns:
         Parsed downloader configuration.
+
+    Raises:
+        ValueError: If no valid per-run Instagram username is configured.
     """
 
     config = ConfigParser()
     config.read(Path(path))
 
-    ig_name_raw = config.get("Credentials", "ig_name", fallback="")
-    if not ig_name_raw:
-        ig_name_raw = config.get("Credentials", "ig_names", fallback="")
+    ig_name = config.get("Credentials", "ig_name", fallback="").strip()
+    if not ig_name or ig_name == "your_instagram_username":
+        raise ValueError(f"Please configure a valid 'ig_name' in {path}.")
 
-    if not ig_name_raw or ig_name_raw == "your_instagram_username":
-        raise ValueError(f"Please configure a valid 'ig_name' or 'ig_names' in {path}.")
+    if "," in ig_name:
+        raise ValueError(
+            "Only one Instagram account can be configured per run. "
+            f"Please set 'ig_name' in {path} to the account currently active "
+            "in Firefox."
+        )
 
-    # Parse comma-separated usernames into a structured list
-    ig_names = [name.strip() for name in ig_name_raw.split(",") if name.strip()]
-    if not ig_names:
-        raise ValueError(f"Please configure at least one valid 'ig_name' in {path}.")
-
-    return DownloaderConfig(
-        ig_names=ig_names,
-    )
+    return DownloaderConfig(ig_name=ig_name)
