@@ -12,6 +12,7 @@ from downloader.logging_utils import log
 class DownloadStats:
     """Mutable counters collected during a download session."""
 
+    account_name: Optional[str] = None
     total_posts_available: Optional[int] = None
     skip_count: int = 0
     download_count: int = 0

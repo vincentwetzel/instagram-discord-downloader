@@ -4,7 +4,6 @@ import random
 from datetime import datetime
 from typing import Optional
 
-from downloader.config import load_downloader_config
 from downloader.downloads import download_saved_posts
 from downloader.history import get_history_db_path
 from downloader.logging_utils import log
@@ -27,22 +26,21 @@ def run_download_session(max_posts: Optional[int] = None) -> str:
 
     log("")
 
-    config = load_downloader_config()
-    account = config.ig_name
-
     start_time = datetime.now()
     log(f"Script started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
-    log(f"\n>>> Starting session for account: {account} <<<")
+    log("\n>>> Starting session (discovering account from Firefox) <<<")
     sleep_with_countdown(
         random.randint(5, 15),
         "Sleeping for {delay} seconds before starting browser session...",
         "  Starting downloads in {remaining} seconds...",
     )
 
-    db_path = get_history_db_path(account)
-    stats = download_saved_posts(account, max_posts)
+    stats = download_saved_posts(max_posts)
     end_time = datetime.now()
+
+    account = stats.account_name or "Unknown"
+    db_path = get_history_db_path(account)
 
     return build_report(
         account,

@@ -6,6 +6,12 @@ The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
+### Changed
+- Updated the README to remove the obsolete `target_account` slash-command
+  note and clarify the current stale-command recovery flow.
+- Clarified the architecture documentation for the current `/ig_download
+  [max_posts]` command shape and stale guild command cleanup.
+
 ### Added
 - Added support for a custom `base_download_path` under a `[Storage]` section
   in `settings.ini`, including dynamic `{account_name}` and `{username}` folder

@@ -1,6 +1,6 @@
 """Configuration loading for the downloader."""
 
-from configparser import ConfigParser
+from configparser import ConfigParser, NoSectionError, NoOptionError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -8,13 +8,13 @@ from typing import Union
 
 @dataclass(frozen=True)
 class DownloaderConfig:
-    """Instagram account used by the downloader.
+    """Configuration for the downloader session.
 
     Args:
-        ig_name: Instagram username to use for downloads.
+        base_download_path: Optional base path for downloads, with placeholders.
     """
 
-    ig_name: str
+    base_download_path: Optional[str] = None
 
 
 def load_downloader_config(path: Union[str, Path] = "settings.ini") -> DownloaderConfig:
@@ -25,23 +25,15 @@ def load_downloader_config(path: Union[str, Path] = "settings.ini") -> Downloade
 
     Returns:
         Parsed downloader configuration.
-
-    Raises:
-        ValueError: If no valid per-run Instagram username is configured.
     """
 
     config = ConfigParser()
     config.read(Path(path))
 
-    ig_name = config.get("Credentials", "ig_name", fallback="").strip()
-    if not ig_name or ig_name == "your_instagram_username":
-        raise ValueError(f"Please configure a valid 'ig_name' in {path}.")
+    base_download_path: Optional[str] = None
+    try:
+        base_download_path = config.get("Storage", "base_download_path", fallback=None)
+    except (NoSectionError, NoOptionError):
+        pass # Section or option might not exist, fallback handles it
 
-    if "," in ig_name:
-        raise ValueError(
-            "Only one Instagram account can be configured per run. "
-            f"Please set 'ig_name' in {path} to the account currently active "
-            "in Firefox."
-        )
-
-    return DownloaderConfig(ig_name=ig_name)
+    return DownloaderConfig(base_download_path=base_download_path)

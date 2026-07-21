@@ -18,8 +18,8 @@ stays responsive.
 
 1. **Discord Bot (`discord_bot.py`)**
    - Built with `discord.py`.
-   - Registers the `/ig_download` slash command and keeps the legacy
-     `!download [limit]` prefix command.
+   - Registers the `/ig_download [max_posts]` slash command and keeps the
+     legacy `!download [limit]` prefix command.
    - Accepts direct messages containing only a positive integer as a limited
      download request from the configured owner.
    - Restricts download commands to the configured `allowed_user_id`.
@@ -118,7 +118,8 @@ stays responsive.
    message to the bot.
 2. Bot verifies the invoking user matches `allowed_user_id`, checks that no
    other downloads are running, locks the session, and delegates to the
-   downloader engine in a background thread.
+   downloader engine in a background thread. If needed, it also clears stale
+   guild-scoped slash commands before syncing the current command schema.
 3. Downloader loads config, locates Firefox's active Instagram cookies, and
    launches a headless Chromium context for the active account's saved-posts
    page. Users can switch accounts between runs by switching Firefox to that

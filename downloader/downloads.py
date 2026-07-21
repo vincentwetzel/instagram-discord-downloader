@@ -129,22 +129,17 @@ def _extract_playwright_cookies(cookiefile_path: Path) -> list[dict[str, Any]]:
     return cookies
 
 
-def download_saved_posts(account_name: str, max_posts: Optional[int]) -> DownloadStats:
+def download_saved_posts(max_posts: Optional[int]) -> DownloadStats:
     """Download saved posts for the configured account.
 
     Args:
-        account_name: Target Instagram username.
         max_posts: Optional maximum number of posts to download.
 
     Returns:
         Download counters and error details.
     """
 
-    db_path = get_history_db_path(account_name)
-    init_history_db(db_path)
-    downloaded_shortcodes = load_downloaded_shortcodes_db(db_path)
     stats = DownloadStats()
-    stats.history_db_size_before = len(downloaded_shortcodes)
 
     cookiefile_str = get_cookiefile()
     if not cookiefile_str:
@@ -169,6 +164,84 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
         context.add_cookies(cookies)
         page = context.new_page()
         inject_stealth(page)
+
+        # Discover the logged-in Instagram account name from the active Firefox session
+        log("Discovering active Instagram account from Firefox session...")
+        page.goto("https://www.instagram.com/", wait_until="networkidle")
+
+        logged_in_account_name: Optional[str] = None
+
+        # Attempt 1: Fetch from Instagram's current user API (immune to DOM updates or translations)
+        try:
+            js_get_user = """
+            async () => {
+                try {
+                    const response = await fetch('/api/v1/web/accounts/current_user/');
+                    if (response.ok) {
+                        const data = await response.json();
+                        return data.user && data.user.username ? data.user.username : null;
+                    }
+                } catch (e) {
+                    return null;
+                }
+                return null;
+            }
+            """
+            api_username = page.evaluate(js_get_user)
+            if api_username:
+                logged_in_account_name = api_username.lower()
+        except Exception as api_exc:
+            logger.debug(f"Failed to fetch username from current_user API: {api_exc}")
+
+        # Attempt 2: Extract from URL after redirection
+        if not logged_in_account_name:
+            current_url_parts = [p for p in page.url.split("/") if p]
+            if len(current_url_parts) >= 3 and "instagram.com" in current_url_parts[1]:
+                potential_username = current_url_parts[2]
+                if potential_username not in ["explore", "reels", "stories", "direct", "emails", "locations", "accounts"]:
+                    logged_in_account_name = potential_username.lower()
+
+        # Attempt 3: Look for profile link in the DOM (broadened selector pattern)
+        if not logged_in_account_name:
+            try:
+                links = page.query_selector_all("a[href^='/']")
+                for link in links:
+                    href = link.get_attribute("href")
+                    if href:
+                        parts = [p for p in href.split("/") if p]
+                        if len(parts) == 1:
+                            potential_username = parts[0]
+                            if potential_username not in ["explore", "reels", "stories", "direct", "emails", "locations", "accounts"]:
+                                logged_in_account_name = potential_username.lower()
+                                break
+            except Exception as dom_exc:
+                logger.debug(f"Failed to extract username from DOM profile links: {dom_exc}")
+
+        # Attempt 4: Check for _sharedData JSON (if available and reliable)
+        if not logged_in_account_name:
+            try:
+                shared_data_json = page.evaluate("window._sharedData")
+                if shared_data_json and "entry_data" in shared_data_json:
+                    viewer = shared_data_json.get("config", {}).get("viewer", {})
+                    if viewer and "username" in viewer:
+                        logged_in_account_name = viewer["username"].lower()
+            except Exception as e:
+                logger.debug(f"Failed to extract username from _sharedData: {e}")
+
+        if not logged_in_account_name:
+            raise RuntimeError(
+                "Could not determine the active Instagram account from the Firefox session. "
+                "Please ensure you are logged into Instagram in Firefox."
+            )
+        
+        log(f"Active Instagram account discovered: {logged_in_account_name}")
+        stats.account_name = logged_in_account_name
+        account_name = logged_in_account_name # For consistency with existing code that uses account_name
+
+        db_path = get_history_db_path(account_name)
+        init_history_db(db_path)
+        downloaded_shortcodes = load_downloaded_shortcodes_db(db_path)
+        stats.history_db_size_before = len(downloaded_shortcodes)
 
         captured_video_urls = []
         captured_responses = {}
@@ -221,7 +294,7 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
                 raise RuntimeError("Session expired or invalid. Please refresh Firefox login.")
 
             # Verify that the active session matches the requested account and we are on the saved posts page
-            if f"/{account_name}/saved/" not in page.url:
+            if f"/{account_name}/saved/" not in page.url and f"/{account_name}/" in page.url: # Added check for general profile page
                 raise RuntimeError(
                     f"Account mismatch! The loaded Firefox cookies belong to a different account. "
                     f"Expected to access '/{account_name}/saved/', but landed on '{page.url}'. "
@@ -229,7 +302,7 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
                 )
 
             # Gather visible post links
-            shortcodes = _gather_saved_shortcodes(page)
+            shortcodes = _gather_saved_shortcodes(page, account_name)
             stats.total_posts_available = len(shortcodes)
             
             prepare_posts(shortcodes, downloaded_shortcodes, max_posts, stats, db_path)
@@ -260,11 +333,12 @@ def download_saved_posts(account_name: str, max_posts: Optional[int]) -> Downloa
     return stats
 
 
-def _gather_saved_shortcodes(page: Page) -> list[str]:
+def _gather_saved_shortcodes(page: Page, account_name: str) -> list[str]:
     """Extract post shortcodes from the loaded Saved feed page.
 
     Args:
         page: Loaded Playwright Page context.
+        account_name: The discovered logged-in Instagram account name.
 
     Returns:
         List of shortcodes found on the page.
@@ -288,10 +362,14 @@ def _gather_saved_shortcodes(page: Page) -> list[str]:
             href = link.get_attribute("href")
             if href:
                 parts = [p for p in href.split("/") if p]
-                if len(parts) >= 2:
-                    shortcode = parts[1]
-                    if shortcode not in shortcodes:
-                        shortcodes.append(shortcode)
+                for identifier in ["p", "reel", "reels"]:
+                    if identifier in parts:
+                        idx = parts.index(identifier)
+                        if idx + 1 < len(parts):
+                            shortcode = parts[idx + 1]
+                            if shortcode not in shortcodes:
+                                shortcodes.append(shortcode)
+                            break
 
         current_count = len(shortcodes)
         if current_count > last_count:

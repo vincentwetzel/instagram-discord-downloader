@@ -147,7 +147,7 @@ Now that the bot is running and in your server:
 - Send the bot a direct message containing only a number, such as `10`, to run
   a limited session from DMs.
 
-If Discord still shows an old `target_account` slash-command option, restart the
+If Discord still shows an old slash-command shape after an update, restart the
 bot so it can clear stale guild command registrations and sync the current
 command schema. If the bot reports that no Firefox session was found, log into
 Instagram in Firefox and run the command again.

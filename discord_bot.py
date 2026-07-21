@@ -88,8 +88,27 @@ intents.message_content = True
 class IGDownloaderBot(commands.Bot):
     """Custom Bot class to handle clean shutdown events."""
 
+    async def setup_hook(self) -> None:
+        """Install an event-loop exception handler before connecting to Discord."""
+        loop = asyncio.get_running_loop()
+
+        def handle_loop_exception(
+            current_loop: asyncio.AbstractEventLoop,
+            context: dict[str, Any],
+        ) -> None:
+            exception = context.get("exception")
+            message = context.get("message", "Unhandled asyncio exception")
+            if exception is not None:
+                logger.critical(message, exc_info=exception)
+            else:
+                logger.critical("%s: %s", message, context)
+
+        loop.set_exception_handler(handle_loop_exception)
+        logger.info("Asyncio exception handler installed.")
+
     async def close(self) -> None:
         """Handle bot shutdown and notify the owner."""
+        logger.warning("Bot shutdown requested.")
         if ALLOWED_USER_ID and ALLOWED_USER_ID.isdigit():
             try:
                 user = await self.fetch_user(int(ALLOWED_USER_ID))
@@ -165,6 +184,18 @@ async def on_ready() -> None:
         logger.info(f"Logged in as {bot.user.name} ({bot.user.id})")
     logger.info("Ready to receive commands!")
     logger.info("------")
+
+
+@bot.event
+async def on_disconnect() -> None:
+    """Record loss of the Discord gateway connection."""
+    logger.warning("Discord gateway disconnected; waiting for reconnect.")
+
+
+@bot.event
+async def on_resumed() -> None:
+    """Record successful resumption of a Discord gateway session."""
+    logger.info("Discord gateway session resumed successfully.")
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
@@ -482,4 +513,11 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         logger.info("Starting Instagram Discord Downloader Bot...")
-        bot.run(TOKEN, log_handler=None)
+        try:
+            bot.run(TOKEN, log_handler=None)
+        except Exception:
+            logger.critical("Bot process terminated due to an uncaught exception.",
+                            exc_info=True)
+            raise
+        finally:
+            logger.warning("Bot process exited.")
