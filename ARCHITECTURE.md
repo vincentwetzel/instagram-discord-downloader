@@ -5,7 +5,7 @@
 The Instagram Discord Downloader has two user-facing entry points backed by one
 synchronous browser-automation downloader engine:
 
-- `discord_bot.py` exposes the Discord `/ig_download [max_posts]`,
+- `instagram_discord_downloader_bot.py` exposes the Discord `/ig_download [max_posts]`,
   `!download [limit]`, and owner-DM numeric limit commands.
 - `instaloader_downloader.py` keeps command-line usage and legacy imports
   stable while delegating to the `downloader/` package.
@@ -16,7 +16,7 @@ stays responsive.
 
 ## Components
 
-1. **Discord Bot (`discord_bot.py`)**
+1. **Discord Bot (`instagram_discord_downloader_bot.py`)**
    - Built with `discord.py`.
    - Registers the `/ig_download [max_posts]` slash command and keeps the
      legacy `!download [limit]` prefix command.
@@ -36,6 +36,8 @@ stays responsive.
    - Sends owner DMs when the bot goes online and when it shuts down cleanly.
    - Writes runtime logs to both standard output and timestamped files under
      `logs/`, with uncaught exceptions routed through the same logger.
+   - Cleans up stale guild slash-command registrations before resyncing the
+     current schema, which avoids lingering outdated command shapes in Discord.
 
 2. **Downloader Engine (`instaloader_downloader.py`, `downloader/`)**
    - Built on top of Playwright with Firefox cookie import.
@@ -89,7 +91,7 @@ stays responsive.
      points media at another local directory.
 
 5. **Windows Bot Helpers (`start_bot.bat`, `stop_bot.bat`)**
-   - `start_bot.bat` launches `discord_bot.py` in the background with
+   - `start_bot.bat` launches `instagram_discord_downloader_bot.py` in the background with
      `pythonw`.
    - `stop_bot.bat` stops the background bot by checking the known socket lock
      port or the console title used by the bot process.
@@ -118,8 +120,9 @@ stays responsive.
    message to the bot.
 2. Bot verifies the invoking user matches `allowed_user_id`, checks that no
    other downloads are running, locks the session, and delegates to the
-   downloader engine in a background thread. If needed, it also clears stale
-   guild-scoped slash commands before syncing the current command schema.
+   downloader engine in a background thread. Before syncing the command
+   schema, it removes stale guild-scoped slash commands so Discord stops
+   showing older shapes.
 3. Downloader loads config, locates Firefox's active Instagram cookies, and
    launches a headless Chromium context for the active account's saved-posts
    page. Users can switch accounts between runs by switching Firefox to that
@@ -139,4 +142,4 @@ stays responsive.
    edits while the session runs.
 9. A text summary is generated and returned to the bot.
 10. The bot truncates the summary if needed, sends it to Discord, and unlocks
-   the session.
+    the session.

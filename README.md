@@ -110,17 +110,17 @@ the bot. Only one account is processed per run; to use a different account,
 switch Firefox to that account before starting the next download. Each account
 keeps its own `download_history_<account>.db` file.
 
-The `[Storage]` section is optional. If `base_download_path` is omitted, media is
-saved to `downloads/<account_name>/`. When provided, `{account_name}` or
-`{username}` placeholders are replaced with the Instagram account currently being
-processed.
+The `[Storage]` section is optional. If `base_download_path` is omitted, media
+is saved to `downloads/<account_name>/`. When provided, `{account_name}` or
+`{username}` placeholders are replaced with the Instagram account currently
+being processed.
 
 ### 6. Run the Bot
 
 In your terminal or command prompt, run:
 
 ```bash
-python discord_bot.py
+python instagram_discord_downloader_bot.py
 ```
 
 If you see log messages saying "Logged in as..." and
@@ -149,8 +149,11 @@ Now that the bot is running and in your server:
 
 If Discord still shows an old slash-command shape after an update, restart the
 bot so it can clear stale guild command registrations and sync the current
-command schema. If the bot reports that no Firefox session was found, log into
-Instagram in Firefox and run the command again.
+command schema. The slash command only accepts the optional `max_posts`
+argument; it does not include a `target_account` field because the downloader
+always uses the Instagram account currently logged into Firefox. If the bot
+reports that no Firefox session was found, log into Instagram in Firefox and
+run the command again.
 
 ## Command-Line Usage
 
@@ -171,8 +174,9 @@ session artifacts, and Python caches are intentionally ignored by Git.
 
 ## Project Layout
 
-- `discord_bot.py`: Discord command surface, owner authorization, progress
-  updates, shutdown notices, runtime logging, and concurrency locks.
+- `instagram_discord_downloader_bot.py`: Discord command surface, owner
+  authorization, progress updates, shutdown notices, runtime logging, and
+  concurrency locks.
 - `instaloader_downloader.py`: Compatibility entry point for CLI use and older
   imports.
 - `downloader/`: Focused modules for auth, configuration, downloads, history,

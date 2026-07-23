@@ -33,7 +33,7 @@ and application stability.
   are more important than awkward wrapping.
 - **Logging:** Use `downloader.logging_utils.log()` for console output within
   the downloader package to ensure consistent, timestamped logging. Use the
-  configured `discord_bot.py` logger for bot startup, shutdown, and error
+  configured `instagram_discord_downloader_bot.py` logger for bot startup, shutdown, and error
   messages so console and file logs stay consistent.
 - **Resource Management:** Prefer context managers (`with` statements) for file
   I/O, network streams, and locks to guarantee proper cleanup of resources
@@ -46,7 +46,7 @@ and application stability.
 
 - **Event Loop Blocking:** The Discord bot operates on an asynchronous event
   loop (`asyncio`). The downloading engine is heavily I/O bound and synchronous.
-  Never call synchronous downloader I/O directly from `discord_bot.py`'s event
+  Never call synchronous downloader I/O directly from `instagram_discord_downloader_bot.py`'s event
   loop. Wrap calls to the downloader using `asyncio.to_thread` or equivalent.
 - **State Locking:** Ensure only one download session runs at a time using an
   async-aware lock, such as `asyncio.Lock`, to reduce rate-limit risk and avoid
@@ -54,7 +54,7 @@ and application stability.
 - **Module Boundaries:** Keep orchestration in `downloader.session`, saved-post
   workflow logic in `downloader.downloads`, SQLite logic in
   `downloader.history`, report formatting in `downloader.reporting`, and
-  Discord-specific behavior in `discord_bot.py`.
+  Discord-specific behavior in `instagram_discord_downloader_bot.py`.
 - **Account Scope:** Download sessions process one configured Instagram account
   per run. Users may switch accounts between runs by changing `ig_name` and
   switching Firefox to that account, but the code should not iterate multiple
