@@ -10,7 +10,7 @@ if %errorlevel% equ 0 set KILLED=1
 
 :: Method 2: Try to find the PID using port 47200 (UDP) and kill it (works for pythonw.exe)
 for /f "tokens=4" %%a in ('netstat -aon ^| findstr "127.0.0.1:47200"') do (
-    taskkill /F /PID %%a >nul 2>&1 && set KILLED=1
+    taskkill /F /T /PID %%a >nul 2>&1 && set KILLED=1
 )
 
 if defined KILLED (

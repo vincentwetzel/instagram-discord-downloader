@@ -105,6 +105,22 @@ class IGDownloaderBot(commands.Bot):
 
         loop.set_exception_handler(handle_loop_exception)
         logger.info("Asyncio exception handler installed.")
+        
+        self.watchdog_task = loop.create_task(self._connection_watchdog())
+
+    async def _connection_watchdog(self) -> None:
+        """Watchdog to force restart the bot if it stays disconnected for too long."""
+        import time
+        await self.wait_until_ready()
+        logger.info("Connection watchdog started.")
+        while not self.is_closed():
+            await asyncio.sleep(10)
+            if not getattr(self, "is_connected", True) and getattr(self, "last_disconnect_time", 0) > 0:
+                duration = time.time() - self.last_disconnect_time
+                if duration > 300:
+                    logger.critical(f"Watchdog triggered! Bot has been disconnected for {duration:.0f}s. Forcing exit so supervisor restarts it.")
+                    import os
+                    os._exit(1)
 
     async def close(self) -> None:
         """Handle bot shutdown and notify the owner."""
@@ -187,14 +203,28 @@ async def on_ready() -> None:
 
 
 @bot.event
+async def on_connect() -> None:
+    """Record connection to Discord."""
+    import time
+    bot.is_connected = True
+    bot.last_disconnect_time = 0
+    logger.info("Connected to Discord gateway.")
+
+@bot.event
 async def on_disconnect() -> None:
     """Record loss of the Discord gateway connection."""
+    import time
+    bot.is_connected = False
+    bot.last_disconnect_time = time.time()
     logger.warning("Discord gateway disconnected; waiting for reconnect.")
 
 
 @bot.event
 async def on_resumed() -> None:
     """Record successful resumption of a Discord gateway session."""
+    import time
+    bot.is_connected = True
+    bot.last_disconnect_time = 0
     logger.info("Discord gateway session resumed successfully.")
 
 @bot.event
@@ -496,28 +526,65 @@ def _enforce_single_instance() -> socket.socket:
         sys.exit(1)
 
 if __name__ == "__main__":
-    _lock = _enforce_single_instance()
+    import argparse
+    import subprocess
+    import time
     
-    if not TOKEN or TOKEN == "YOUR_DISCORD_BOT_TOKEN":
-        logger.error(
-            "❌ Please add your Discord bot token to settings.ini "
-            "under the [Discord] section."
-        )
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-bot", action="store_true", help="Internal use only. Run the actual bot process.")
+    args, unknown = parser.parse_known_args()
 
-    if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
-        logger.error(
-            "❌ Please add a valid numeric Discord user ID to settings.ini "
-            "under the [Discord] section (allowed_user_id) to secure your bot."
-        )
-        sys.exit(1)
+    if not args.run_bot:
+        # SUPERVISOR MODE
+        _lock = _enforce_single_instance()
+        logger.info("Starting Instagram Discord Downloader Bot Supervisor...")
+        
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NO_WINDOW
+            
+        while True:
+            logger.info("Supervisor: Launching bot process...")
+            try:
+                # Use sys.executable to ensure we use the same Python environment
+                process = subprocess.Popen(
+                    [sys.executable, __file__, "--run-bot"],
+                    creationflags=creationflags
+                )
+                process.wait()
+                logger.warning(f"Supervisor: Bot process exited with code {process.returncode}. Restarting in 10 seconds...")
+            except KeyboardInterrupt:
+                logger.info("Supervisor: Interrupted by user. Exiting.")
+                sys.exit(0)
+            except Exception as e:
+                logger.error(f"Supervisor: Failed to start bot process: {e}")
+            
+            try:
+                time.sleep(10)
+            except KeyboardInterrupt:
+                sys.exit(0)
     else:
-        logger.info("Starting Instagram Discord Downloader Bot...")
+        # BOT MODE (Child Process)
+        if not TOKEN or TOKEN == "YOUR_DISCORD_BOT_TOKEN":
+            logger.error(
+                "❌ Please add your Discord bot token to settings.ini "
+                "under the [Discord] section."
+            )
+            sys.exit(1)
+
+        if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
+            logger.error(
+                "❌ Please add a valid numeric Discord user ID to settings.ini "
+                "under the [Discord] section (allowed_user_id) to secure your bot."
+            )
+            sys.exit(1)
+
+        logger.info("Starting bot instance...")
         try:
             bot.run(TOKEN, log_handler=None)
         except Exception:
-            logger.critical("Bot process terminated due to an uncaught exception.",
-                            exc_info=True)
-            raise
+            logger.critical("Bot process terminated due to an uncaught exception.", exc_info=True)
+            sys.exit(1)
         finally:
             logger.warning("Bot process exited.")
+            sys.exit(1)
