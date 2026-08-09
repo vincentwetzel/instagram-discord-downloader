@@ -8,6 +8,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Union
 
@@ -88,6 +89,18 @@ intents.message_content = True
 class IGDownloaderBot(commands.Bot):
     """Custom Bot class to handle clean shutdown events."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize connection health state before the first gateway attempt.
+
+        Args:
+            *args: Positional arguments passed to ``commands.Bot``.
+            **kwargs: Keyword arguments passed to ``commands.Bot``.
+        """
+        super().__init__(*args, **kwargs)
+        self.watchdog_task: Optional[asyncio.Task[None]] = None
+        self.is_connected: bool = False
+        self.last_disconnect_time: float = time.monotonic()
+
     async def setup_hook(self) -> None:
         """Install an event-loop exception handler before connecting to Discord."""
         loop = asyncio.get_running_loop()
@@ -105,26 +118,35 @@ class IGDownloaderBot(commands.Bot):
 
         loop.set_exception_handler(handle_loop_exception)
         logger.info("Asyncio exception handler installed.")
-        
+
         self.watchdog_task = loop.create_task(self._connection_watchdog())
 
     async def _connection_watchdog(self) -> None:
-        """Watchdog to force restart the bot if it stays disconnected for too long."""
-        import time
-        await self.wait_until_ready()
+        """Force a process restart when gateway recovery stalls.
+
+        The watchdog must not wait for ``wait_until_ready``.  That future never
+        completes when DNS or the network is unavailable during startup or after
+        waking from sleep, which would leave the supervisor watching a zombie
+        child process forever.
+        """
         logger.info("Connection watchdog started.")
         while not self.is_closed():
             await asyncio.sleep(10)
-            if not getattr(self, "is_connected", True) and getattr(self, "last_disconnect_time", 0) > 0:
-                duration = time.time() - self.last_disconnect_time
+            if not self.is_connected:
+                duration = time.monotonic() - self.last_disconnect_time
                 if duration > 300:
-                    logger.critical(f"Watchdog triggered! Bot has been disconnected for {duration:.0f}s. Forcing exit so supervisor restarts it.")
-                    import os
+                    logger.critical(
+                        "Watchdog triggered! Bot has been disconnected for "
+                        "%0.f s. Forcing exit so supervisor restarts it.",
+                        duration,
+                    )
                     os._exit(1)
 
     async def close(self) -> None:
         """Handle bot shutdown and notify the owner."""
         logger.warning("Bot shutdown requested.")
+        if self.watchdog_task is not None:
+            self.watchdog_task.cancel()
         if ALLOWED_USER_ID and ALLOWED_USER_ID.isdigit():
             try:
                 user = await self.fetch_user(int(ALLOWED_USER_ID))
@@ -179,6 +201,8 @@ async def _clear_stale_guild_commands() -> None:
 async def on_ready() -> None:
     """Handle bot readiness and sync slash commands."""
     global _is_synced, _sent_startup_dm
+    bot.is_connected = True
+    bot.last_disconnect_time = 0
     if not _is_synced:
         try:
             await _clear_stale_guild_commands()
@@ -205,24 +229,19 @@ async def on_ready() -> None:
 @bot.event
 async def on_connect() -> None:
     """Record connection to Discord."""
-    import time
-    bot.is_connected = True
-    bot.last_disconnect_time = 0
     logger.info("Connected to Discord gateway.")
 
 @bot.event
 async def on_disconnect() -> None:
     """Record loss of the Discord gateway connection."""
-    import time
     bot.is_connected = False
-    bot.last_disconnect_time = time.time()
+    bot.last_disconnect_time = time.monotonic()
     logger.warning("Discord gateway disconnected; waiting for reconnect.")
 
 
 @bot.event
 async def on_resumed() -> None:
     """Record successful resumption of a Discord gateway session."""
-    import time
     bot.is_connected = True
     bot.last_disconnect_time = 0
     logger.info("Discord gateway session resumed successfully.")
@@ -513,7 +532,7 @@ def _enforce_single_instance() -> socket.socket:
         A bound socket acting as an instance lock.
     """
     if os.name == "nt":
-        # Set a unique console title so the stop.bat script can find and kill it easily
+        # Set a unique console title so the project stop helper can find it easily
         ctypes.windll.kernel32.SetConsoleTitleW("IG_Discord_Bot_Running")
         
     lock_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

@@ -1,188 +1,125 @@
 # Instagram Discord Downloader
 
-A Discord bot and command-line downloader for saving new Instagram saved posts
-to your local machine with Playwright-driven browser automation. Downloads are
-tracked in account-specific SQLite databases so repeat runs skip posts that were
-already saved.
+This project downloads new posts saved by the Instagram account that is active
+in Firefox. It provides a Discord bot and an interactive command-line entry
+point. Downloaded post shortcodes are tracked in an account-specific SQLite
+database so later runs skip posts that are already saved locally.
 
 ## Features
 
-- Trigger downloads from Discord with `/ig_download`, `!download`, or a numeric
-  direct message to the bot owner account.
-- Limit a session with `/ig_download max_posts:10`, `!download 10`, or a DM
-  containing only a positive integer.
-- Send owner direct messages when the bot comes online or shuts down cleanly.
-- Show live progress by editing the initial Discord status message.
-- Continue live progress updates through the channel message if Discord's
-  interaction webhook token expires during a long run.
-- Write Discord bot runtime logs to both the console and timestamped files under
-  `logs/`, keeping only recent runs.
-- Prevent overlapping sessions with an async download lock and a local
-  single-instance socket lock.
-- Authenticate by reusing active Firefox Instagram cookies for the account
-  currently logged in with Firefox.
-- Download post and carousel media through layered Playwright retrieval
-  strategies for CDN responses, progressive blob-video stream resolution, page
-  metadata, canvas-readable images, in-page fetches, and screenshot fallback
-  for images.
-- Resolve Instagram blob videos by preferring progressive MP4 streams from JSON
-  metadata, Open Graph tags, hydrated page HTML, and embed pages before falling
-  back to captured playback streams.
-- Avoid duplicate carousel video saves by grouping stream candidates by asset
-  ID and selecting the best unused progressive URL before falling back to
-  previously seen streams.
-- Name files from the original post owner and post timestamp when Instagram
-  exposes them, using page metadata and DOM fallbacks when needed.
-- Track downloaded post shortcodes in `download_history_<account>.db` with
-  idempotent `INSERT OR IGNORE` writes.
-- Prune stale history entries when posts are no longer in saved posts.
-- Return a session report to Discord, truncated safely for Discord's message
-  limit.
+- `/ig_download`, `!download`, and owner-only numeric direct messages.
+- Optional positive post limit for each run; omit it to process all new posts.
+- Firefox-cookie authentication with one active Instagram account per run.
+- Post, reel, and carousel media retrieval through layered Playwright fallbacks.
+- Progressive MP4 preference for blob videos and asset-aware carousel deduplication.
+- Owner/timestamp-based filenames when Instagram metadata is available.
+- Account-specific history databases with idempotent writes and stale-entry pruning.
+- Live Discord progress updates, runtime logs, and startup/shutdown owner DMs.
+- Session locking plus a local single-instance supervisor.
 
-## Setup
+## Requirements
 
-### 1. Create a Discord Bot
+- Windows is the supported operating system for the included batch helpers.
+- Python 3.9 or newer.
+- A Discord bot with Message Content Intent enabled.
+- Firefox logged into Instagram with access to the account's Saved posts.
 
-If you've never made a Discord bot before, follow these steps:
+Install the Python dependencies and the Playwright Chromium browser:
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-   and log in with your Discord account.
-2. Click the **New Application** button in the top right, give it a name (like
-   "IG Downloader"), and click **Create**.
-3. On the left menu, click **Bot**.
-4. Under the **Privileged Gateway Intents** section, toggle
-   **Message Content Intent** to ON and save changes. This is required for the
-   bot to read `!download` commands.
-5. Scroll up to the **Token** section and click **Reset Token**. Copy this long
-   string of text. **Keep this secret!** This is your `YOUR_DISCORD_BOT_TOKEN`.
-
-### 2. Invite the Bot to Your Server
-
-1. Still in the Developer Portal, click **OAuth2** > **URL Generator** on the
-   left menu.
-2. Under **Scopes**, check the box for `bot`.
-3. Under **Bot Permissions**, check `Send Messages` and `Read Message History`.
-4. Scroll down, copy the **Generated URL**, and paste it into a new tab in your
-   web browser.
-5. Select your Discord server from the dropdown and authorize the bot to join.
-
-### 3. Get Your Discord User ID
-
-To ensure only you can trigger downloads, you need your unique User ID.
-
-1. Open Discord, go to **User Settings** (the gear icon bottom left) >
-   **Advanced**.
-2. Toggle **Developer Mode** to ON.
-3. Close settings, right-click your own profile name in any chat or server
-   sidebar, and click **Copy User ID**. This is your `YOUR_DISCORD_USER_ID`.
-
-### 4. Install Dependencies
-
-Make sure you have Python installed. Open your computer's terminal or command
-prompt in this folder and run:
-
-```bash
-pip install discord.py playwright playwright-stealth
-playwright install chromium
+```powershell
+python -m pip install discord.py playwright playwright-stealth
+python -m playwright install chromium
 ```
 
-### 5. Configuration (`settings.ini`)
+## Configuration
 
-Create a file named `settings.ini` in the same folder as the scripts and paste
-the following inside it, replacing the placeholder text with your actual
-details:
+Create `settings.ini` beside the scripts:
 
 ```ini
 [Discord]
 discord_bot_token = YOUR_DISCORD_BOT_TOKEN
 allowed_user_id = YOUR_DISCORD_USER_ID
 
-[Credentials]
-ig_name = your_instagram_username
-
 [Storage]
 base_download_path = downloads/{account_name}
 ```
 
-The downloader uses your active Firefox Instagram session for authentication.
-Log into Instagram in Firefox as the account you want to download before running
-the bot. Only one account is processed per run; to use a different account,
-switch Firefox to that account before starting the next download. Each account
-keeps its own `download_history_<account>.db` file.
+`discord_bot_token` authenticates the bot. `allowed_user_id` is the only
+Discord user allowed to start downloads. The `[Storage]` section is optional;
+without it, media is stored in `downloads/<active_account>/`. The supported
+placeholders are `{account_name}` and `{username}`. Absolute local paths are
+also supported.
 
-The `[Storage]` section is optional. If `base_download_path` is omitted, media
-is saved to `downloads/<account_name>/`. When provided, `{account_name}` or
-`{username}` placeholders are replaced with the Instagram account currently
-being processed.
+The downloader does not use an Instagram username from `settings.ini`. Before
+each run, log into the desired account in Firefox. The account name is detected
+from the active Instagram session and is used for the saved-post URL, history
+database, and default storage folder.
 
-### 6. Run the Bot
+Keep `settings.ini` private. Never commit it or paste the bot token into an
+issue, log, or chat.
 
-In your terminal or command prompt, run:
+### Creating the Discord bot
 
-```bash
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Create its bot user and copy the token into `settings.ini`.
+3. Enable **Message Content Intent** under **Privileged Gateway Intents**.
+4. Invite the bot with the `bot` scope and at least **Send Messages** and
+   **Read Message History** permissions.
+5. Enable Discord Developer Mode and copy your user ID into `allowed_user_id`.
+
+## Running
+
+Run the supervised bot in a terminal:
+
+```powershell
 python instagram_discord_downloader_bot.py
 ```
 
-If you see log messages saying "Logged in as..." and
-"Ready to receive commands!", you are good to go. The same startup and error
-logs are also written to timestamped files under `logs/` for troubleshooting.
+The parent process owns the UDP single-instance lock on `127.0.0.1:47200` and
+restarts the child bot process after an unexpected exit. On Windows, the helper
+scripts start or stop the same supervised process:
 
-On Windows, you can also use:
+- `instagram_discord_downloader_start.bat`
+- `instagram_discord_downloader_stop.bat`
 
-- `start_bot.bat` to launch the bot in the background with `pythonw`.
-- `stop_bot.bat` to stop the background bot process by the local socket lock
-  port or console title.
+For an interactive run without Discord:
 
-## Usage
-
-Now that the bot is running and in your server:
-
-- Go to your Discord server and type `/ig_download` (or `!download`) in any
-  channel the bot can see to download **all** new saved posts.
-- Use `/ig_download max_posts:10` (or `!download 10`) to limit the session to a
-  maximum of 10 posts.
-- `/ig_download` only accepts the optional `max_posts` argument. It does not
-  take a `target_account` option because downloads use the Instagram account
-  currently logged in with Firefox.
-- Send the bot a direct message containing only a number, such as `10`, to run
-  a limited session from DMs.
-
-If Discord still shows an old slash-command shape after an update, restart the
-bot so it can clear stale guild command registrations and sync the current
-command schema. The slash command only accepts the optional `max_posts`
-argument; it does not include a `target_account` field because the downloader
-always uses the Instagram account currently logged into Firefox. If the bot
-reports that no Firefox session was found, log into Instagram in Firefox and
-run the command again.
-
-## Command-Line Usage
-
-Run the downloader directly without Discord:
-
-```bash
+```powershell
 python instaloader_downloader.py
 ```
 
-The command-line entry point prints the configured account, then asks for an
-optional post limit before starting the same one-account download session used
-by the Discord bot.
+The CLI prompts for an optional positive post limit. Press Enter for unlimited.
 
-Downloaded media is written under the configured `[Storage]` path, or under
-`downloads/` when no custom path is configured. Local runtime state such as
-`settings.ini`, `download_history_<account>.db`, `logs/`, media files, browser
-session artifacts, and Python caches are intentionally ignored by Git.
+## Discord commands
 
-## Project Layout
+| Command | Result |
+| --- | --- |
+| `/ig_download` | Download all new saved posts. |
+| `/ig_download max_posts:10` | Download at most 10 posts. |
+| `!download` | Prefix-command equivalent of the slash command. |
+| `!download 10` | Prefix-command equivalent with a limit. |
+| Owner DM containing `10` | Start a limited run from a direct message. |
 
-- `instagram_discord_downloader_bot.py`: Discord command surface, owner
-  authorization, progress updates, shutdown notices, runtime logging, and
-  concurrency locks.
-- `instaloader_downloader.py`: Compatibility entry point for CLI use and older
-  imports.
-- `downloader/`: Focused modules for auth, configuration, downloads, history,
-  reporting, timing, logging, owner metadata extraction, and media capture.
-- `start_bot.bat` / `stop_bot.bat`: Windows helpers for background bot
-  management.
-- `ARCHITECTURE.md`: Component and data-flow overview.
-- `CODING_STANDARDS.md`: Style, concurrency, database, and security rules.
-- `CHANGELOG.md`: Notable project changes.
+Only the configured owner can use these commands. A second request is rejected
+while a session is running. The slash command accepts only the optional
+`max_posts` argument; it does not select an Instagram account.
+
+## Runtime files
+
+- `download_history_<account>.db`: SQLite history for the detected account.
+- `downloads/` or the configured storage path: downloaded media.
+- `logs/discord_bot_<timestamp>.log`: bot and downloader diagnostics. The bot
+  retains the five most recent bot log files.
+- `settings.ini`: local credentials and storage configuration.
+
+These files, browser artifacts, and Python caches are ignored by Git. A report
+is returned to Discord at the end of a run; long reports and errors are capped
+before they are sent.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md): components, data flow, and module boundaries.
+- [Configuration](docs/CONFIGURATION.md): settings and account-scoped state.
+- [Operations](docs/OPERATIONS.md): startup, recovery, and troubleshooting.
+- [Coding standards](docs/CODING_STANDARDS.md): project development rules.
+- [Changelog](docs/CHANGELOG.md): notable changes.
