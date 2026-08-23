@@ -431,6 +431,7 @@ async def _handle_download_session(
                 
             await send_final(f"✅ **Download Session Complete!**\n```\n{report}\n```")
         except Exception as e:
+            logger.exception("Download session failed unexpectedly.")
             try:
                 error_msg = str(e)
                 if len(error_msg) > 1900:

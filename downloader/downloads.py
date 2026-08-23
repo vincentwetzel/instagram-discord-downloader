@@ -14,7 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import (
+    sync_playwright,
+    Page,
+    BrowserContext,
+    Error as PlaywrightError,
+)
 # Resilient import block to handle varying packaging structures of playwright-stealth
 inject_stealth = None
 
@@ -322,15 +327,55 @@ def download_saved_posts(max_posts: Optional[int]) -> DownloadStats:
         except Exception as exc:
             stats.download_errors += 1
             stats.error_details.append(f"Automation failure: {exc}")
+            stats.session_failure = _is_retryable_browser_failure(exc, page)
+            stats.session_error = str(exc)
             log(f"\nFailed during download session: {exc}")
             logger.error(f"Failed during download session for {account_name}: {exc}", exc_info=True)
         finally:
-            browser.close()
+            try:
+                browser.close()
+            except Exception as close_exc:
+                logger.warning("Failed to close browser cleanly: %s", close_exc)
             stats.history_db_size_after = len(downloaded_shortcodes)
             if stats.remaining_before is not None:
                 stats.remaining_after = max(0, stats.remaining_before - stats.download_count)
 
     return stats
+
+
+def _is_retryable_browser_failure(exc: Exception, page: Optional[Page]) -> bool:
+    """Identify failures that commonly follow a computer sleep or wake cycle.
+
+    Args:
+        exc: Exception raised by the browser workflow.
+        page: Current Playwright page, when one exists.
+
+    Returns:
+        True when a fresh browser attempt is likely to recover the failure.
+    """
+    message = str(exc).lower()
+    non_retryable_markers = (
+        "session expired",
+        "no instagram cookies",
+        "no active firefox session",
+        "could not determine the active instagram account",
+        "account mismatch",
+    )
+    if any(marker in message for marker in non_retryable_markers):
+        return False
+
+    wake_failure_markers = (
+        "target page, context or browser has been closed",
+        "browser has been closed",
+        "connection closed",
+        "connection reset",
+        "net::err_",
+        "timeout",
+        "timed out",
+    )
+    return isinstance(exc, PlaywrightError) or (
+        page is not None and page.is_closed()
+    ) or any(marker in message for marker in wake_failure_markers)
 
 
 def _gather_saved_shortcodes(page: Page, account_name: str) -> list[str]:
@@ -1040,6 +1085,11 @@ def download_remaining_posts(
             captured_responses,
         )
 
+        if stats.session_failure:
+            raise RuntimeError(
+                stats.session_error or "The browser session became unavailable."
+            )
+
         if max_posts is not None and stats.download_count >= max_posts:
             log(f"Reached maximum post limit ({max_posts}). Stopping download session.")
             break
@@ -1697,6 +1747,9 @@ def try_download_post(
     except Exception as exc:
         stats.download_errors += 1
         stats.error_details.append(f"Post {shortcode}: {exc}")
+        if _is_retryable_browser_failure(exc, page):
+            stats.session_failure = True
+            stats.session_error = str(exc)
         log(f"Error downloading post {shortcode}: {exc}")
         logger.error(f"Error downloading post {shortcode}: {exc}", exc_info=True)
 

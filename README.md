@@ -79,8 +79,8 @@ The parent process owns the UDP single-instance lock on `127.0.0.1:47200` and
 restarts the child bot process after an unexpected exit. On Windows, the helper
 scripts start or stop the same supervised process:
 
-- `instagram_discord_downloader_start.bat`
-- `instagram_discord_downloader_stop.bat`
+- `start_instagram_discord_downloader.bat`
+- `stop_instagram_discord_downloader.bat`
 
 For an interactive run without Discord:
 
@@ -89,6 +89,8 @@ python instaloader_downloader.py
 ```
 
 The CLI prompts for an optional positive post limit. Press Enter for unlimited.
+It uses the same Firefox session, account discovery, history database, and
+storage rules as the bot.
 
 ## Discord commands
 
@@ -108,13 +110,22 @@ while a session is running. The slash command accepts only the optional
 
 - `download_history_<account>.db`: SQLite history for the detected account.
 - `downloads/` or the configured storage path: downloaded media.
-- `logs/discord_bot_<timestamp>.log`: bot and downloader diagnostics. The bot
-  retains the five most recent bot log files.
+- `logs/discord_bot_<timestamp>.log`: bot and downloader diagnostics. The
+  supervisor and child each create timestamped logs; the bot retains the five
+  most recent bot log files.
 - `settings.ini`: local credentials and storage configuration.
 
 These files, browser artifacts, and Python caches are ignored by Git. A report
 is returned to Discord at the end of a run; long reports and errors are capped
 before they are sent.
+
+## Recovery behavior
+
+The supervisor restarts the child after an unexpected exit. During a download,
+recoverable browser failures trigger up to two additional browser attempts.
+Successful posts are written to SQLite as they finish, so a resumed attempt
+skips work already completed. Authentication failures, rate-limit failures, and
+other non-recoverable errors are reported without retrying indefinitely.
 
 ## Documentation
 

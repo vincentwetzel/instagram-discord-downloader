@@ -15,13 +15,14 @@ window to stop it cleanly.
 On Windows, use these helpers when running in the background:
 
 ```text
-instagram_discord_downloader_start.bat
-instagram_discord_downloader_stop.bat
+start_instagram_discord_downloader.bat
+stop_instagram_discord_downloader.bat
 ```
 
 The start helper stops matching existing bot processes before launching a new
 background process. The stop helper looks for the bot window title and the
-single-instance UDP port.
+single-instance UDP port. Both helpers are project-local files and should be
+run from the project directory.
 
 For a direct run without Discord:
 
@@ -71,7 +72,7 @@ to refresh its command cache.
 
 ### The bot is already running
 
-Run `instagram_discord_downloader_stop.bat` and then start the bot again. The
+Run `stop_instagram_discord_downloader.bat` and then start the bot again. The
 single-instance lock is a UDP socket, not a lock file. If the stop helper cannot
 find the process, inspect the latest log and check which process owns port
 `47200` before terminating it manually.
@@ -83,6 +84,17 @@ session and network connection, then retry. The downloader uses multiple media
 fallbacks, but Instagram layout or session changes can still prevent a post
 from being resolved. Keep the history database unless you deliberately want to
 reprocess that account's posts.
+
+If the computer sleeps during a run, the downloader detects a lost browser
+connection, relaunches the browser, and resumes from the account history. The
+retry is bounded at three total browser attempts; if wake recovery still fails,
+the report and log contain the underlying browser error.
+
+The log contains bot lifecycle events, Discord library output, downloader
+progress, and full tracebacks for failed download sessions. The background
+helper uses `pythonw`, so the log is the primary place to inspect output after
+startup or a crash. The supervisor and child each create a timestamped log;
+the child log normally contains the Discord connection and download details.
 
 ### Discord reports are incomplete
 

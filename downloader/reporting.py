@@ -23,6 +23,8 @@ class DownloadStats:
     history_db_size_after: int = 0
     remaining_before: Optional[int] = None
     remaining_after: Optional[int] = None
+    session_failure: bool = False
+    session_error: Optional[str] = None
 
 
 def build_report(

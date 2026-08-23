@@ -29,6 +29,11 @@ The current implementation does not read an Instagram username from
 run. The configured Discord user and the active Firefox account are independent
 settings.
 
+The storage template is read with interpolation disabled, so Windows paths and
+literal percent signs are safe to use. The two supported placeholders are
+replaced with the discovered Instagram username before the output directory is
+created.
+
 ## Account isolation
 
 One run processes one account: the account detected from Firefox. Its history
@@ -53,3 +58,7 @@ Expected local state includes:
 
 Do not delete a history database unless you intentionally want its account's
 saved posts to be processed again.
+
+The downloader does not store credentials in the history database. Firefox
+cookies are read locally to create a temporary Playwright browser context; the
+bot token is read only from `settings.ini` by the Discord entry point.

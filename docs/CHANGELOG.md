@@ -9,11 +9,13 @@ format. Versions follow Semantic Versioning.
 
 - Architecture, configuration, operations, and coding-standard guides under
   `docs/`.
-- Project-specific Windows helper names:
-  `instagram_discord_downloader_start.bat` and
-  `instagram_discord_downloader_stop.bat`.
+- Project-specific Windows helpers:
+  `start_instagram_discord_downloader.bat` and
+  `stop_instagram_discord_downloader.bat`.
 - Discord runtime logging to the console and timestamped files, with retention
   of the five newest bot logs.
+- Downloader progress is included in the bot log, and failed download
+  sessions now record full tracebacks.
 - Owner online/offline direct-message notifications.
 - `/ig_download` slash-command support alongside the `!download` command.
 - Owner-only numeric DM shortcut for limited runs.
@@ -37,6 +39,8 @@ format. Versions follow Semantic Versioning.
 
 ### Fixed
 
+- Recoverable Playwright failures now relaunch the browser up to two times and
+  resume from SQLite history after a computer sleep or wake cycle.
 - Prevented the connection watchdog from waiting forever for the first ready
   event after startup or a network interruption.
 - Preserved progress updates when an interaction webhook token expires.

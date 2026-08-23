@@ -12,7 +12,8 @@ engine:
 
 The downloader performs browser and filesystem I/O synchronously. Discord
 commands run it with `asyncio.to_thread` so the Discord event loop remains
-responsive.
+responsive. The CLI calls the same session function directly because it does
+not own an async event loop.
 
 ## Runtime components
 
@@ -25,13 +26,17 @@ The bot:
   containing a numeric limit.
 - Authorizes every request against `[Discord].allowed_user_id`.
 - Uses an `asyncio.Lock` to prevent overlapping download sessions.
+- Relaunches the browser after recoverable failures, for at most three total
+  attempts; completed shortcodes remain committed in SQLite so the next attempt
+  resumes.
 - Sends an initial status message and forwards downloader log messages to live
   progress edits.
 - Falls back from an expired interaction webhook to a normal channel message
   when possible.
 - Caps final reports and errors before sending them to Discord.
 - Sends online and clean-shutdown notifications to the configured owner.
-- Writes console and file logs, retaining five recent `discord_bot_*.log` files.
+- Writes console and file logs. The bot removes older bot logs and retains the
+  five most recent `discord_bot_*.log` files.
 - Clears matching stale guild-scoped `ig_download` commands before syncing the
   current global slash-command schema.
 
@@ -107,4 +112,6 @@ post that is saved again can be downloaded again.
 7. Successful files are written to the account's storage directory and their
    shortcodes are inserted into SQLite.
 8. Statistics and errors are formatted into a session report.
-9. The bot sends the capped report and releases the session lock.
+9. Recoverable browser failures relaunch the browser up to two times, with
+   SQLite history preventing already completed posts from repeating.
+10. The bot sends the capped report and releases the session lock.
