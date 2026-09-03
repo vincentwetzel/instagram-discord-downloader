@@ -53,6 +53,8 @@ Expected local state includes:
 - `settings.ini` — Discord credentials and optional storage configuration.
 - `download_history_<account>.db` — account-specific downloaded-post history.
 - `downloads/` or the configured storage directory — downloaded media.
+- Hidden `<shortcode>_*.part` files may appear briefly in the storage directory
+  while a post is being downloaded; failed posts clean them up.
 - `logs/` — timestamped bot logs; the five newest bot logs are retained.
 - Firefox cookie/profile data and Python caches — read or generated locally.
 

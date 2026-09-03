@@ -39,6 +39,9 @@ format. Versions follow Semantic Versioning.
 
 ### Fixed
 
+- Prevented long download sessions from retaining Playwright response handles
+  and carousel media bytes in Python memory; response bodies are disposed after
+  copying and media is staged to disk one item at a time.
 - Recoverable Playwright failures now relaunch the browser up to two times and
   resume from SQLite history after a computer sleep or wake cycle.
 - Prevented the connection watchdog from waiting forever for the first ready

@@ -40,6 +40,12 @@ The CLI asks for a positive post limit; press Enter for unlimited.
 4. Confirm the configured storage location is writable.
 5. Start only one bot process.
 
+During a carousel download, the downloader stages each media item in a hidden
+`.part` file in the configured storage directory. These files are renamed to
+their final filenames after the post is collected and are removed when the
+post fails. A leftover `.part` file from an interrupted process is incomplete
+media and can be deleted safely after confirming no download is running.
+
 ## Commands
 
 - `/ig_download` or `!download` processes all new saved posts.

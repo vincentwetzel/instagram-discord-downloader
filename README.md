@@ -12,6 +12,7 @@ database so later runs skip posts that are already saved locally.
 - Firefox-cookie authentication with one active Instagram account per run.
 - Post, reel, and carousel media retrieval through layered Playwright fallbacks.
 - Progressive MP4 preference for blob videos and asset-aware carousel deduplication.
+- Per-item media staging to limit memory use during long carousel downloads.
 - Owner/timestamp-based filenames when Instagram metadata is available.
 - Account-specific history databases with idempotent writes and stale-entry pruning.
 - Live Discord progress updates, runtime logs, and startup/shutdown owner DMs.

@@ -56,13 +56,19 @@ Instagram cookie context from Firefox rather than accepting an Instagram
 password or account selector. One account is processed per run.
 
 Media retrieval is intentionally layered. Depending on what Instagram exposes,
-the downloader can use captured network responses, page media elements, JSON
-metadata, Open Graph metadata, hydrated page HTML, embed HTML, in-page fetches,
-browser-context requests, canvas extraction, and image screenshots. Blob videos
-prefer progressive MP4 sources with audio before captured playback streams.
-Carousel video candidates are grouped by stable asset identifiers where
-available, ranked by quality, and selected as unused candidates before a
-previously used stream is reused.
+the downloader can use page media elements, JSON metadata, Open Graph metadata,
+hydrated page HTML, embed HTML, in-page fetches, browser-context requests,
+canvas extraction, image screenshots, and playback-captured streams as a final
+video fallback. Blob videos prefer progressive MP4 sources with audio before
+DASH or captured playback streams. Carousel video candidates are grouped by
+stable asset identifiers where available, ranked by quality, and selected as
+unused candidates before a previously used stream is reused.
+
+Each media item is fetched and written to a temporary file before traversal
+continues. Playwright response handles are disposed after their bodies are
+copied, and the temporary file is renamed to its final account-scoped filename
+after all carousel items have been resolved. If a post fails, any remaining
+temporary files are removed so partial media is not left in the output folder.
 
 Downloaded filenames use the original post owner and UTC timestamp when those
 values can be recovered. The downloader filters recommendation-grid media when
@@ -109,8 +115,9 @@ post that is saved again can be downloaded again.
    skipped.
 6. Each new post is opened, active media is selected, and retrieval fallbacks
    are attempted until media is available or the post fails.
-7. Successful files are written to the account's storage directory and their
-   shortcodes are inserted into SQLite.
+7. Each resolved media item is staged on disk, then renamed into the account's
+   storage directory after the post's media has been collected; the shortcode
+   is inserted into SQLite only after the post completes successfully.
 8. Statistics and errors are formatted into a session report.
 9. Recoverable browser failures relaunch the browser up to two times, with
    SQLite history preventing already completed posts from repeating.

@@ -9,6 +9,7 @@ import os
 import random
 import re
 import sqlite3
+import tempfile
 import time # Added import for polling loop
 from datetime import datetime
 from pathlib import Path
@@ -248,48 +249,6 @@ def download_saved_posts(max_posts: Optional[int]) -> DownloadStats:
         downloaded_shortcodes = load_downloaded_shortcodes_db(db_path)
         stats.history_db_size_before = len(downloaded_shortcodes)
 
-        captured_video_urls = []
-        captured_responses = {}
-
-        def _capture_responses(response: Any) -> None:
-            try:
-                url = response.url
-                if not ("instagram.com" in url or "fbcdn.net" in url):
-                    return
-
-                content_type = response.headers.get("content-type", "")
-                is_video = (
-                    "video" in content_type
-                    or "mime=video" in url
-                    or any(url.endswith(ext) for ext in [".mp4", ".mov", ".webm"])
-                )
-                is_image = "image" in content_type
-
-                if is_video or is_image:
-                    chunks = [
-                        "bytestart=",
-                        "byteend=",
-                        ".m4s",
-                        "seg-",
-                        "fragment",
-                        "chunk",
-                    ]
-                    if any(chunk in url for chunk in chunks):
-                        return
-
-                    if is_video and url not in captured_video_urls:
-                        captured_video_urls.append(url)
-                        logger.info(
-                            "Added video stream URL to captured_video_urls: "
-                            f"{url[:100]}..."
-                        )
-
-                    captured_responses[url] = response
-            except Exception:
-                pass
-
-        page.on("response", _capture_responses)
-
         log("Accessing saved posts index...")
         try:
             page.goto(f"https://www.instagram.com/{account_name}/saved/all-posts/", wait_until="networkidle")
@@ -321,8 +280,6 @@ def download_saved_posts(max_posts: Optional[int]) -> DownloadStats:
                 max_posts,
                 stats,
                 db_path,
-                captured_video_urls,
-                captured_responses,
             )
         except Exception as exc:
             stats.download_errors += 1
@@ -556,6 +513,23 @@ def _extract_video_asset_id(url: str) -> Optional[str]:
         return match.group(1)
     
     return None
+
+
+def _media_asset_key(url: str) -> str:
+    """Return a stable key for identifying a downloaded media asset.
+
+    Args:
+        url: Candidate media URL.
+
+    Returns:
+        Stable video asset ID when available, otherwise the URL path without
+        transient query parameters.
+    """
+
+    asset_id = _extract_video_asset_id(url)
+    if asset_id:
+        return f"asset:{asset_id}"
+    return url.split("?", maxsplit=1)[0]
 
 
 def _is_progressive_url(url: str) -> bool:
@@ -1058,8 +1032,6 @@ def download_remaining_posts(
     max_posts: Optional[int],
     stats: DownloadStats,
     db_path: Path,
-    captured_video_urls: list[str],
-    captured_responses: dict[str, Any],
 ) -> None:
     """Download posts that are not already tracked in history."""
     remaining_total = sum(1 for sc in shortcodes if sc not in downloaded_shortcodes)
@@ -1081,8 +1053,6 @@ def download_remaining_posts(
             downloaded_shortcodes,
             stats,
             db_path,
-            captured_video_urls,
-            captured_responses,
         )
 
         if stats.session_failure:
@@ -1109,15 +1079,10 @@ def try_download_post(
     downloaded_shortcodes: set[str],
     stats: DownloadStats,
     db_path: Path,
-    captured_video_urls: list[str],
-    captured_responses: dict[str, Any],
 ) -> None:
     """Download a single post (supporting carousels) using Playwright DOM queries."""
+    temporary_files: list[tuple[Path, str]] = []
     try:
-        # Clear intercepted resources from previous post runs to avoid mismatched references
-        captured_video_urls.clear()
-        captured_responses.clear()
-
         log(f"Loading post {download_position}/{remaining_total} (shortcode: {shortcode})...")
         page.goto(f"https://www.instagram.com/p/{shortcode}/", wait_until="networkidle")
 
@@ -1158,8 +1123,39 @@ def try_download_post(
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
 
-        media_items_data = []
-        video_counter = 0
+        # Resolve the output metadata before traversing a carousel so each
+        # item can be written immediately instead of accumulating its bytes.
+        owner_username = _extract_owner_username(page, account_name)
+
+        timestamp_str = None
+        time_elem = page.query_selector("time")
+        if time_elem:
+            datetime_str = time_elem.get_attribute("datetime")
+            if datetime_str:
+                try:
+                    clean_dt = datetime_str.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(clean_dt)
+                    timestamp_str = dt.strftime("%Y-%m-%d_%H-%M-%S")
+                except Exception:
+                    pass
+        if not timestamp_str:
+            timestamp_str = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(Path("settings.ini"))
+        base_path_template = config.get("Storage", "base_download_path", fallback=None)
+
+        if base_path_template:
+            interpolated_path = base_path_template
+            for placeholder in ["{account_name}", "{username}"]:
+                interpolated_path = interpolated_path.replace(placeholder, account_name)
+            output_dir = Path(interpolated_path)
+        else:
+            output_dir = Path("downloads") / account_name
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        downloaded_media_keys: set[str] = set()
 
         # Traverse carousel slides and download payloads on-the-fly
         for slide_idx in range(max_slides):
@@ -1253,10 +1249,13 @@ def try_download_post(
                                 if not text:
                                     logger.info(f"[Diagnostic] Fallback 1: Falling back to APIRequestContext Fetch for: {json_url}")
                                     response = context.request.get(json_url, headers=api_headers)
-                                    logger.info(f"[Diagnostic] Fallback 1: APIRequestContext HTTP Response Status = {response.status}")
-                                    if response.status == 200:
-                                        text = response.text()
-                                        logger.info(f"[Diagnostic] Fallback 1 APIRequestContext Raw Response (first 400 chars): {text[:400]}")
+                                    try:
+                                        logger.info(f"[Diagnostic] Fallback 1: APIRequestContext HTTP Response Status = {response.status}")
+                                        if response.status == 200:
+                                            text = response.text()
+                                            logger.info(f"[Diagnostic] Fallback 1 APIRequestContext Raw Response (first 400 chars): {text[:400]}")
+                                    finally:
+                                        response.dispose()
 
                                 if text:
                                     data = json.loads(text)
@@ -1339,24 +1338,10 @@ def try_download_post(
                             candidate_meta = meta_video.get_attribute("content")
                             logger.info(f"[Diagnostic] Fallback 2: Found meta tag content: {candidate_meta[:100] if candidate_meta else 'None'}")
                             if candidate_meta:
-                                candidate_asset_id = _extract_video_asset_id(candidate_meta)
-                                if not candidate_asset_id:
-                                    try:
-                                        candidate_asset_id = candidate_meta.split("?")[0].split("/")[-1]
-                                    except Exception:
-                                        candidate_asset_id = candidate_meta
-                                
-                                already_used = False
-                                for item in media_items_data:
-                                    item_asset_id = _extract_video_asset_id(item["url"])
-                                    if not item_asset_id:
-                                        try:
-                                            item_asset_id = item["url"].split("?")[0].split("/")[-1]
-                                        except Exception:
-                                            item_asset_id = item["url"]
-                                    if item_asset_id == candidate_asset_id:
-                                        already_used = True
-                                        break
+                                already_used = (
+                                    _media_asset_key(candidate_meta)
+                                    in downloaded_media_keys
+                                )
                                 
                                 if not already_used:
                                     if _is_progressive_url(candidate_meta):
@@ -1396,28 +1381,10 @@ def try_download_post(
                                 unique_best_urls = _extract_unique_best_video_urls(seen_matches)
                                 logger.info(f"[Diagnostic] Fallback 3: Scored progressive grouping yielded {len(unique_best_urls)} unique best-candidate URLs.")
                                 
-                                # Find the first unused unique asset URL
+                                # Find the first unused unique asset URL.
                                 unused_matches = []
                                 for u in unique_best_urls:
-                                    u_asset_id = _extract_video_asset_id(u)
-                                    if not u_asset_id:
-                                        try:
-                                            u_asset_id = u.split("?")[0].split("/")[-1]
-                                        except Exception:
-                                            u_asset_id = u
-                                            
-                                    already_used = False
-                                    for item in media_items_data:
-                                        item_asset_id = _extract_video_asset_id(item["url"])
-                                        if not item_asset_id:
-                                            try:
-                                                item_asset_id = item["url"].split("?")[0].split("/")[-1]
-                                            except Exception:
-                                                item_asset_id = item["url"]
-                                        if item_asset_id == u_asset_id:
-                                            already_used = True
-                                            break
-                                    if not already_used:
+                                    if _media_asset_key(u) not in downloaded_media_keys:
                                         unused_matches.append(u)
 
                                 logger.info(f"[Diagnostic] Fallback 3: Unused progressive stream matches = {len(unused_matches)}")
@@ -1432,6 +1399,7 @@ def try_download_post(
                                 else:
                                     logger.info(f"[Diagnostic] Fallback 3 resolved to a DASH URL. Saving as last resort and continuing search: {candidate[:100]}...")
                                     last_resort_url = candidate
+                            del html_content, normalized_html, decoded_content
                         except Exception as parse_exc:
                             logger.warning(f"Failed to parse progressive mp4 from page content: {parse_exc}")
 
@@ -1441,9 +1409,16 @@ def try_download_post(
                             embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
                             logger.info(f"[Diagnostic] Fallback 4: Fetching public embed page template from: {embed_url}")
                             response = context.request.get(embed_url, headers={"User-Agent": user_agent})
-                            logger.info(f"[Diagnostic] Fallback 4: Embed HTTP Response Status = {response.status}")
-                            if response.status == 200:
-                                embed_html = response.text()
+                            try:
+                                logger.info(f"[Diagnostic] Fallback 4: Embed HTTP Response Status = {response.status}")
+                                if response.status == 200:
+                                    embed_html = response.text()
+                                else:
+                                    embed_html = None
+                            finally:
+                                response.dispose()
+
+                            if embed_html:
                                 # Normalize JSON-escaped slashes
                                 normalized_embed = embed_html.replace("\\/", "/")
                                 decoded_embed = normalized_embed.encode('utf-8').decode('unicode_escape', errors='ignore')
@@ -1521,8 +1496,8 @@ def try_download_post(
             if not media_url:
                 break
 
-            # Prevent double-processing or infinite loops on same item
-            if any(item["url"] == media_url for item in media_items_data):
+            # Prevent double-processing or infinite loops on the same asset.
+            if _media_asset_key(media_url) in downloaded_media_keys:
                 logger.info("Duplicate media item detected after transition. Stopping traversal.")
                 break
 
@@ -1530,35 +1505,34 @@ def try_download_post(
             media_bytes = None
             tier_reports = []
 
-            # Tier 1: Check captured network responses (direct hit!)
-            if media_url in captured_responses:
-                try:
-                    media_bytes = captured_responses[media_url].body()
-                    logger.info(f"Retrieved {media_url[:100]}... directly from captured network responses.")
-                    tier_reports.append("Tier 1 (Direct Cache): Success")
-                except Exception as body_exc:
-                    logger.info(f"Failed to get body from captured response for {media_url[:100]}...: {body_exc}")
-                    tier_reports.append(f"Tier 1 (Direct Cache): Failed to read body - {body_exc}")
-            else:
-                tier_reports.append("Tier 1 (Direct Cache): URL not captured in network events")
-
-            if media_bytes is None:
-                # Fuzzy path match in case of minor query param discrepancies
-                try:
-                    item_path = media_url.split('?')[0]
-                    matched_fuzzy = False
-                    for cap_url, cap_resp in captured_responses.items():
-                        if cap_url.split('?')[0] == item_path:
-                            media_bytes = cap_resp.body()
-                            logger.info(f"Retrieved {media_url[:100]}... via fuzzy path match from captured responses.")
-                            tier_reports.append("Tier 1 (Fuzzy Match): Success")
-                            matched_fuzzy = True
-                            break
-                    if not matched_fuzzy:
-                        tier_reports.append("Tier 1 (Fuzzy Match): No matching URL path found in cache")
-                except Exception as fuzzy_exc:
-                    logger.info(f"Fuzzy match body retrieval failed: {fuzzy_exc}")
-                    tier_reports.append(f"Tier 1 (Fuzzy Match): Failure - {fuzzy_exc}")
+            # Tier 1: Fetch the URL directly. The response is disposed as soon
+            # as its body is copied, so neither response handles nor bodies are
+            # retained across carousel items or posts.
+            response = None
+            try:
+                response = context.request.get(
+                    media_url,
+                    headers={
+                        "Referer": "https://www.instagram.com/",
+                        "User-Agent": user_agent,
+                    },
+                )
+                if response.status == 200:
+                    media_bytes = response.body()
+                    logger.info(f"Retrieved {media_url[:100]}... via direct context fetch.")
+                    tier_reports.append("Tier 1 (Direct Context Fetch): Success")
+                else:
+                    tier_reports.append(
+                        f"Tier 1 (Direct Context Fetch): HTTP {response.status}"
+                    )
+            except Exception as body_exc:
+                logger.info(f"Direct context fetch failed for {media_url[:100]}...: {body_exc}")
+                tier_reports.append(
+                    f"Tier 1 (Direct Context Fetch): Failed - {body_exc}"
+                )
+            finally:
+                if response is not None:
+                    response.dispose()
 
             # Tier 2: Canvas extraction for the active image element
             if ext == "jpg":
@@ -1578,6 +1552,7 @@ def try_download_post(
                         base64_data = page.evaluate(js_canvas, active_elem)
                         if base64_data:
                             media_bytes = base64.b64decode(base64_data)
+                            del base64_data
                             logger.info(f"Retrieved {media_url[:100]}... via Canvas extraction.")
                             tier_reports.append("Tier 2 (Canvas Read): Success")
                         else:
@@ -1611,6 +1586,7 @@ def try_download_post(
                     """
                     base64_data = page.evaluate(js_fetch, media_url)
                     media_bytes = base64.b64decode(base64_data)
+                    del base64_data
                     logger.info(f"Retrieved {media_url[:100]}... via in-page fetch.")
                     tier_reports.append("Tier 3 (In-page Fetch): Success")
                 except Exception as fetch_exc:
@@ -1619,10 +1595,14 @@ def try_download_post(
 
             # Tier 4: Background Context fetch fallback (last resort)
             if media_bytes is None:
+                response = None
                 try:
                     response = context.request.get(
                         media_url,
-                        headers={"Referer": "https://www.instagram.com/", "User-Agent": user_agent}
+                        headers={
+                            "Referer": "https://www.instagram.com/",
+                            "User-Agent": user_agent,
+                        },
                     )
                     if response.status == 200:
                         media_bytes = response.body()
@@ -1633,6 +1613,9 @@ def try_download_post(
                 except Exception as req_exc:
                     logger.info(f"Tier 4 context fetch failed for {media_url[:100]}...: {req_exc}")
                     tier_reports.append(f"Tier 4 (Context Request): Failed - {req_exc}")
+                finally:
+                    if response is not None:
+                        response.dispose()
 
             # Tier 5: Element screenshot fallback (absolute failsafe for images)
             if ext == "jpg":
@@ -1651,7 +1634,18 @@ def try_download_post(
                 reports_summary = " -> ".join(tier_reports)
                 raise RuntimeError(f"All retrieval tiers exhausted. Details: {reports_summary}")
 
-            media_items_data.append({"bytes": media_bytes, "ext": ext, "url": media_url})
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=output_dir,
+                prefix=f".{shortcode}_",
+                suffix=f".{ext}.part",
+                delete=False,
+            ) as temporary_file:
+                temporary_file.write(media_bytes)
+                temporary_path = Path(temporary_file.name)
+            temporary_files.append((temporary_path, ext))
+            downloaded_media_keys.add(_media_asset_key(media_url))
+            del media_bytes
 
             # Slide to the next media item if we are in a carousel
             if is_carousel:
@@ -1682,53 +1676,18 @@ def try_download_post(
                     except Exception as kb_err:
                         logger.debug(f"Keyboard fallback failed: {kb_err}")
 
-        if not media_items_data:
+        if not temporary_files:
             raise ValueError("No media element found for this post structure.")
 
-        # Extract original post owner username (Instaloader legacy standard)
-        owner_username = _extract_owner_username(page, account_name)
-
-        # Extract original post creation timestamp (Instaloader legacy standard)
-        timestamp_str = None
-        time_elem = page.query_selector("time")
-        if time_elem:
-            datetime_str = time_elem.get_attribute("datetime")
-            if datetime_str:
-                try:
-                    # Parse ISO UTC string (e.g., '2024-06-16T01:34:00.000Z')
-                    clean_dt = datetime_str.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(clean_dt)
-                    timestamp_str = dt.strftime("%Y-%m-%d_%H-%M-%S")
-                except Exception:
-                    pass
-        if not timestamp_str:
-            timestamp_str = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-
-        # Load storage configuration from settings.ini
-        config = configparser.ConfigParser(interpolation=None)
-        config.read(Path("settings.ini"))
-        base_path_template = config.get("Storage", "base_download_path", fallback=None)
-
-        if base_path_template:
-            interpolated_path = base_path_template
-            for placeholder in ["{account_name}", "{username}"]:
-                interpolated_path = interpolated_path.replace(placeholder, account_name)
-            output_dir = Path(interpolated_path)
-        else:
-            output_dir = Path("downloads") / account_name
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        for idx, item in enumerate(media_items_data):
-            if len(media_items_data) > 1:
-                filename = f"{owner_username}_{timestamp_str}_{idx + 1}.{item['ext']}"
+        for idx, (temporary_path, ext) in enumerate(temporary_files):
+            if len(temporary_files) > 1:
+                filename = f"{owner_username}_{timestamp_str}_{idx + 1}.{ext}"
             else:
-                filename = f"{owner_username}_{timestamp_str}.{item['ext']}"
-            
+                filename = f"{owner_username}_{timestamp_str}.{ext}"
+
             file_path = output_dir / filename
-            with open(file_path, "wb") as f:
-                f.write(item["bytes"])
-            file_size_kb = len(item["bytes"]) / 1024
+            temporary_path.replace(file_path)
+            file_size_kb = file_path.stat().st_size / 1024
             log(f"Downloaded {file_path} ({file_size_kb:.1f} KB)")
 
         stats.download_count += 1
@@ -1740,11 +1699,16 @@ def try_download_post(
         total_avail = stats.total_posts_available if stats.total_posts_available else "unknown"
         
         log(
-                f"Completed download of post {shortcode} with {len(media_items_data)} items "
+                f"Completed download of post {shortcode} with {len(temporary_files)} items "
             f"({stats.download_count}/{max_display} this session - "
             f"Archive: {archive_count}/{total_avail})"
         )
     except Exception as exc:
+        for temporary_path, _ in temporary_files:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Failed to remove temporary media file %s", temporary_path)
         stats.download_errors += 1
         stats.error_details.append(f"Post {shortcode}: {exc}")
         if _is_retryable_browser_failure(exc, page):
