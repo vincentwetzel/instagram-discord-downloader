@@ -2,27 +2,35 @@
 
 ## Start and stop
 
-Run the supervised bot from the project directory:
+Start the supervised bot from the project directory:
 
-```powershell
-python instagram_discord_downloader_bot.py
+```bat
+start_instagram_discord_downloader.bat
 ```
 
-The supervisor owns `127.0.0.1:47200`, launches the bot child process, and
-restarts it after an unexpected child exit. Press `Ctrl+C` in the supervisor
-window to stop it cleanly.
+The start helper looks for Python 3.10 or later in the project `.venv` and then
+on `PATH`. It checks for `discord.py` and Playwright before starting the
+PowerShell supervisor hidden. The supervisor holds an exclusive lock in `run/`,
+launches the bot child process, and restarts it after an unexpected child exit.
+Running `python instagram_discord_downloader_bot.py` directly also starts the
+supervisor in the background. Bot logs are written to
+`logs/discord_bot_*.log`.
 
-On Windows, use these helpers when running in the background:
+Use these project-local helpers to control the background bot:
 
 ```text
 start_instagram_discord_downloader.bat
 stop_instagram_discord_downloader.bat
 ```
 
-The start helper stops matching existing bot processes before launching a new
-background process. The stop helper looks for the bot window title and the
-single-instance UDP port. Both helpers are project-local files and should be
-run from the project directory.
+The start helper starts the supervisor or requests a restart if one is already
+running. The stop helper asks the supervisor to stop the child, waits up to 25
+seconds for it to exit, and terminates it if it remains stuck.
+
+To run the bot at Windows sign-in, create a shortcut to
+`<project directory>\start_instagram_discord_downloader.bat` in `shell:startup`.
+Set **Start in** to the project directory. The supervisor runs hidden, so the
+shortcut does not need to target `pythonw.exe` directly.
 
 For a direct run without Discord:
 
@@ -79,9 +87,9 @@ to refresh its command cache.
 ### The bot is already running
 
 Run `stop_instagram_discord_downloader.bat` and then start the bot again. The
-single-instance lock is a UDP socket, not a lock file. If the stop helper cannot
-find the process, inspect the latest log and check which process owns port
-`47200` before terminating it manually.
+supervisor lock is held by an open file handle at `run/supervisor.lock`; it is
+released automatically when the supervisor exits. A leftover lock file on disk
+does not indicate that the bot is still running.
 
 ### A run fails or media is missing
 
@@ -96,11 +104,10 @@ connection, relaunches the browser, and resumes from the account history. The
 retry is bounded at three total browser attempts; if wake recovery still fails,
 the report and log contain the underlying browser error.
 
-The log contains bot lifecycle events, Discord library output, downloader
-progress, and full tracebacks for failed download sessions. The background
-helper uses `pythonw`, so the log is the primary place to inspect output after
-startup or a crash. The supervisor and child each create a timestamped log;
-the child log normally contains the Discord connection and download details.
+The child log contains bot lifecycle events, Discord library output, downloader
+progress, and full tracebacks for failed download sessions. The bot runs hidden,
+so the log is the primary place to inspect output after startup or a crash. Each
+child launch creates a timestamped log.
 
 ### Discord reports are incomplete
 

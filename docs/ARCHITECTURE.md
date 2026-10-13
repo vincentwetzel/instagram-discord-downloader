@@ -40,9 +40,11 @@ The bot:
 - Clears matching stale guild-scoped `ig_download` commands before syncing the
   current global slash-command schema.
 
-The script has a supervisor mode and a child bot mode. Normal execution starts
-the supervisor, which owns the UDP lock at `127.0.0.1:47200`, launches the child,
-and restarts it after an unexpected exit. The `--run-bot` argument is internal.
+On Windows, normal execution starts `supervise_instagram_discord_downloader.ps1`.
+The PowerShell supervisor holds an exclusive file lock under `run/`, launches the
+bot child, and restarts it after an unexpected exit. The start and stop helpers
+send restart and stop requests through files under `run/`. The `--run-bot`
+argument is internal and starts the child directly.
 
 ### Downloader engine
 

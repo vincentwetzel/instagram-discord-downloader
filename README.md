@@ -70,18 +70,24 @@ issue, log, or chat.
 
 ## Running
 
-Run the supervised bot in a terminal:
+On Windows, start the supervised bot with:
 
-```powershell
-python instagram_discord_downloader_bot.py
+```bat
+start_instagram_discord_downloader.bat
 ```
 
-The parent process owns the UDP single-instance lock on `127.0.0.1:47200` and
-restarts the child bot process after an unexpected exit. On Windows, the helper
-scripts start or stop the same supervised process:
+The helper checks the Python interpreter and required libraries before starting
+the PowerShell supervisor. The supervisor uses an exclusive file lock under
+`run/` and restarts the child bot process after an unexpected exit. Running
+`python instagram_discord_downloader_bot.py` directly also starts the supervisor
+in the background. Use the helper scripts to start, restart, or stop it:
 
 - `start_instagram_discord_downloader.bat`
 - `stop_instagram_discord_downloader.bat`
+
+For sign-in startup, create a shortcut to
+`start_instagram_discord_downloader.bat` in `shell:startup` and set **Start in**
+to the project directory.
 
 For an interactive run without Discord:
 

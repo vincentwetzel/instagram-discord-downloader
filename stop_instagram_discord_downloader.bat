@@ -1,20 +1,26 @@
 @echo off
-echo ===================================================
-echo Stopping Instagram Discord Downloader Bot...
-echo ===================================================
+setlocal
+for %%I in ("%~dp0.") do set "PROJECT_DIR=%%~fI"
+set "RUN_DIR=%PROJECT_DIR%\run"
+set "STOP_PATH=%RUN_DIR%\stop.request"
+set "PID_PATH=%RUN_DIR%\supervisor.pid"
 
-:: Method 1: Try to kill by Window Title (if run via standard python.exe)
-taskkill /F /FI "WINDOWTITLE eq IG_Discord_Bot_Running*" /T >nul 2>&1
-set "KILLED="
-if %errorlevel% equ 0 set KILLED=1
-
-:: Method 2: Try to find the PID using port 47200 (UDP) and kill it (works for pythonw.exe)
-for /f "tokens=4" %%a in ('netstat -aon ^| findstr "127.0.0.1:47200"') do (
-    taskkill /F /T /PID %%a >nul 2>&1 && set KILLED=1
+if not exist "%PID_PATH%" (
+    echo No running supervisor was found.
+    exit /b 0
 )
 
-if defined KILLED (
-    echo [OK] Bot successfully stopped.
-) else (
-    echo [INFO] No running bot was found.
+if not exist "%RUN_DIR%" mkdir "%RUN_DIR%" >nul 2>&1
+> "%STOP_PATH%" echo stop
+
+for /l %%I in (1,1,35) do (
+    if not exist "%PID_PATH%" (
+        echo Instagram Discord Downloader stopped.
+        exit /b 0
+    )
+    timeout /t 1 /nobreak >nul
 )
+
+echo Stop requested, but the supervisor has not exited yet.
+echo Check the newest log under "%PROJECT_DIR%\logs".
+exit /b 1

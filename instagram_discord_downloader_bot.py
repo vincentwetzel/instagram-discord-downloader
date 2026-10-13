@@ -2,11 +2,10 @@
 
 import asyncio
 import configparser
-import ctypes
 import datetime
 import logging
 import os
-import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -526,85 +525,73 @@ async def slash_download(
         interaction=interaction,
     )
 
-def _enforce_single_instance() -> socket.socket:
-    """Ensure only one instance of the bot is running at a time.
+def _start_supervisor() -> int:
+    """Start the Windows PowerShell supervisor using this Python interpreter.
 
     Returns:
-        A bound socket acting as an instance lock.
+        An exit code suitable for ``sys.exit``.
     """
-    if os.name == "nt":
-        # Set a unique console title so the project stop helper can find it easily
-        ctypes.windll.kernel32.SetConsoleTitleW("IG_Discord_Bot_Running")
-        
-    lock_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    project_dir = Path(__file__).resolve().parent
+    supervisor_path = project_dir / "supervise_instagram_discord_downloader.ps1"
+    if not supervisor_path.is_file():
+        logger.error("Supervisor script not found: %s", supervisor_path)
+        return 2
+
+    environment = os.environ.copy()
+    environment["INSTAGRAM_DISCORD_DOWNLOADER_PYTHON_EXE"] = sys.executable
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(supervisor_path),
+        "-ProjectDir",
+        str(project_dir),
+    ]
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        # Bind to a specific local port
-        lock_socket.bind(("127.0.0.1", 47200))
-        return lock_socket
+        subprocess.Popen(
+            command,
+            cwd=project_dir,
+            env=environment,
+            creationflags=creation_flags,
+        )
     except OSError:
-        logger.error("❌ Another instance of the bot is already running. Please close it first.")
-        sys.exit(1)
+        logger.exception("Could not start the PowerShell bot supervisor.")
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    import argparse
-    import subprocess
-    import time
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-bot", action="store_true", help="Internal use only. Run the actual bot process.")
-    args, unknown = parser.parse_known_args()
-
-    if not args.run_bot:
-        # SUPERVISOR MODE
-        _lock = _enforce_single_instance()
-        logger.info("Starting Instagram Discord Downloader Bot Supervisor...")
-        
-        creationflags = 0
+    if "--run-bot" not in sys.argv[1:]:
         if os.name == "nt":
-            creationflags = subprocess.CREATE_NO_WINDOW
-            
-        while True:
-            logger.info("Supervisor: Launching bot process...")
-            try:
-                # Use sys.executable to ensure we use the same Python environment
-                process = subprocess.Popen(
-                    [sys.executable, __file__, "--run-bot"],
-                    creationflags=creationflags
-                )
-                process.wait()
-                logger.warning(f"Supervisor: Bot process exited with code {process.returncode}. Restarting in 10 seconds...")
-            except KeyboardInterrupt:
-                logger.info("Supervisor: Interrupted by user. Exiting.")
-                sys.exit(0)
-            except Exception as e:
-                logger.error(f"Supervisor: Failed to start bot process: {e}")
-            
-            try:
-                time.sleep(10)
-            except KeyboardInterrupt:
-                sys.exit(0)
-    else:
-        # BOT MODE (Child Process)
-        if not TOKEN or TOKEN == "YOUR_DISCORD_BOT_TOKEN":
-            logger.error(
-                "❌ Please add your Discord bot token to settings.ini "
-                "under the [Discord] section."
-            )
-            sys.exit(1)
+            sys.exit(_start_supervisor())
+        logger.error("Start this bot through its supervisor on Windows.")
+        sys.exit(2)
 
-        if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
-            logger.error(
-                "❌ Please add a valid numeric Discord user ID to settings.ini "
-                "under the [Discord] section (allowed_user_id) to secure your bot."
-            )
-            sys.exit(1)
+    if not TOKEN or TOKEN == "YOUR_DISCORD_BOT_TOKEN":
+        logger.error(
+            "❌ Please add your Discord bot token to settings.ini "
+            "under the [Discord] section."
+        )
+        sys.exit(1)
 
-        logger.info("Starting bot instance...")
-        try:
-            bot.run(TOKEN, log_handler=None)
-        except Exception:
-            logger.critical("Bot process terminated due to an uncaught exception.", exc_info=True)
-            sys.exit(1)
-        finally:
-            logger.warning("Bot process exited.")
-            sys.exit(1)
+    if not ALLOWED_USER_ID or not ALLOWED_USER_ID.isdigit():
+        logger.error(
+            "❌ Please add a valid numeric Discord user ID to settings.ini "
+            "under the [Discord] section (allowed_user_id) to secure your bot."
+        )
+        sys.exit(1)
+
+    logger.info("Starting bot child process...")
+    try:
+        bot.run(TOKEN, log_handler=None)
+    except Exception:
+        logger.critical(
+            "Bot process terminated due to an uncaught exception.",
+            exc_info=True,
+        )
+        sys.exit(1)
+    finally:
+        logger.warning("Bot process exited.")

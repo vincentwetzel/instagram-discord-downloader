@@ -25,9 +25,13 @@ format. Versions follow Semantic Versioning.
 
 ### Changed
 
+- Replaced the Python UDP-lock loop with a PowerShell process supervisor that
+  supports start, restart, and stop requests through project-local runtime files.
+- Updated the Windows startup helpers and documented using the start helper in
+  the user's Startup folder.
 - Documented the current one-account-per-run model: the account is discovered
   from the active Firefox Instagram session.
-- Documented the supervisor/child process model and UDP single-instance lock.
+- Documented the supervisor/child process model and exclusive file lock.
 - Improved blob-video selection by preferring progressive audio-included MP4
   metadata sources before playback-captured streams.
 - Improved carousel video selection with stable asset grouping, quality scoring,
